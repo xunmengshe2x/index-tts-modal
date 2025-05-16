@@ -3,17 +3,18 @@ import wget
 from pathlib import Path
 from typing import Optional
 
-from modal import Stub, method, Image, Mount
+from modal import App, method, Image, Mount, Secret
+
 from modal_config import (
     configure_image, MODEL_FILES, GPU_CONFIG,
     CHECKPOINT_DIR, MODEL_VOLUME
 )
 
-# Create stub with configured image
-stub = Stub("indextts-service")
+# Create app with configured image
+app = App("indextts-service")
 image = configure_image()
 
-@stub.cls(
+@app.cls(
     image=image,
     gpu=GPU_CONFIG,
     network_file_systems={MODEL_VOLUME: CHECKPOINT_DIR},
@@ -90,7 +91,7 @@ class IndexTTSService:
         }
 
 # Example usage
-@stub.local_entrypoint()
+@app.local_entrypoint()
 def main():
     service = IndexTTSService()
     # Add test code here if needed
