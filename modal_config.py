@@ -38,7 +38,7 @@ def configure_image():
             "vocos==0.1.0",
             "tensorboard==2.9.1",
             "gradio",
-            "web"
+            "wget"
         ])
         # Install the package itself
         .pip_install("git+https://github.com/index-tts/index-tts.git")
