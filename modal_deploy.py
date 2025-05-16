@@ -91,5 +91,43 @@ class IndexTTSService:
 # Example usage
 @app.local_entrypoint()
 def main():
+    # First check if service is healthy
     service = IndexTTSService()
-    # Add test code here if needed
+    health_status = service.health_check()
+    
+    if not health_status["model_loaded"]:
+        print("Error: Model not loaded properly")
+        return
+        
+    # Reference audio path
+    ref_audio_path = "path_to_your_reference.wav"
+    
+    # Check if reference audio exists
+    if not os.path.exists(ref_audio_path):
+        print(f"Error: Reference audio file not found at {ref_audio_path}")
+        return
+        
+    try:
+        # Read reference audio
+        with open(ref_audio_path, "rb") as f:
+            reference_audio = f.read()
+            
+        # Text to convert
+        text = "Hello, this is a test of the IndexTTS system."
+        
+        # Generate speech
+        print("Generating speech...")
+        audio_data = service.generate_speech(
+            text=text,
+            reference_audio=reference_audio
+        )
+        
+        # Save output
+        output_path = "output.wav"
+        with open(output_path, "wb") as f:
+            f.write(audio_data)
+            
+        print(f"Speech generated successfully! Saved to {output_path}")
+        
+    except Exception as e:
+        print(f"Error during speech generation: {str(e)}")
