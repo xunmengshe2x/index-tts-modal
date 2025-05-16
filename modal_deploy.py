@@ -16,7 +16,6 @@ image = configure_image()
 @app.cls(
     image=image,
     gpu=GPU_CONFIG,
-    secrets=[Secret.from_name("huggingface-token")]
 )
 class IndexTTSService:
     def __enter__(self):
