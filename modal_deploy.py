@@ -3,7 +3,7 @@ import wget
 from pathlib import Path
 from typing import Optional
 
-from modal import App, method, Image, Mount, Secret
+from modal import App, method, Image, Secret
 
 from modal_config import (
     configure_image, MODEL_FILES, GPU_CONFIG,
@@ -17,7 +17,6 @@ image = configure_image()
 @app.cls(
     image=image,
     gpu=GPU_CONFIG,
-    network_file_systems={MODEL_VOLUME: CHECKPOINT_DIR},
     secrets=[Secret.from_name("huggingface-token")]
 )
 class IndexTTSService:
