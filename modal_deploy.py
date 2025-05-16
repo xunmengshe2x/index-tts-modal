@@ -16,6 +16,8 @@ image = configure_image()
 @app.cls(
     image=image,
     gpu=GPU_CONFIG,
+    name="IndexTTSService"  # Explicit service name
+
 )
 class IndexTTSService:
     def __enter__(self):
