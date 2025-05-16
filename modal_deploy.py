@@ -12,12 +12,14 @@ from modal_config import (
 
 # Create app with configured image
 app = App("indextts-service")
-image = configure_image()
+
+# Configure the image with explicit mounting
+image = (configure_image()
+         .add_local_dir(".", remote_path="/root/app"))  # Mount the entire local directory
 
 @app.cls(
     image=image,
-    gpu=GPU_CONFIG,
-    mounts=[app.mount.from_local_dir(".", remote_path="/root/app")]
+    gpu=GPU_CONFIG
 )
 class IndexTTSService:
     def __enter__(self):
@@ -122,59 +124,3 @@ class IndexTTSService:
             "device": self.model.device if hasattr(self, "model") else None,
             "is_fp16": self.model.is_fp16 if hasattr(self, "model") else None
         }
-
-@app.exception_handler(Exception)
-def exception_handler(exc: Exception):
-    """Handle exceptions globally"""
-    print(f"Error occurred: {str(exc)}")
-    return {"error": str(exc)}, 500
-
-# Example usage with new Modal syntax
-@app.local_entrypoint()
-def main():
-    with modal.enable_output():  # Enable Modal output logging
-        # First check if service is healthy
-        service = IndexTTSService()
-        health_status = service.health_check()
-        
-        if not health_status["model_loaded"]:
-            print("Error: Model not loaded properly")
-            print("Health status:", health_status)
-            return
-            
-        # Reference audio path
-        ref_audio_path = "path_to_your_reference.wav"
-        
-        # Check if reference audio exists
-        if not os.path.exists(ref_audio_path):
-            print(f"Error: Reference audio file not found at {ref_audio_path}")
-            return
-            
-        try:
-            # Read reference audio
-            with open(ref_audio_path, "rb") as f:
-                reference_audio = f.read()
-                
-            # Text to convert
-            text = "Hello, this is a test of the IndexTTS system."
-            
-            # Generate speech
-            print("Generating speech...")
-            audio_data = service.generate_speech(
-                text=text,
-                reference_audio=reference_audio,
-                use_fast=True
-            )
-            
-            # Save output
-            output_path = "output.wav"
-            with open(output_path, "wb") as f:
-                f.write(audio_data)
-                
-            print(f"Speech generated successfully! Saved to {output_path}")
-            
-        except Exception as e:
-            print(f"Error during speech generation: {str(e)}")
-            if hasattr(e, "__traceback__"):
-                import traceback
-                traceback.print_exc()
