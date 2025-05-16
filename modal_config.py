@@ -1,7 +1,4 @@
-from modal import Image, Secret, NetworkFileSystem
-
-# Create network storage for persisting model files
-MODEL_VOLUME = NetworkFileSystem.persisted("indextts-model-cache")
+from modal import Image, Secret
 
 # Base image configuration
 def configure_image():
