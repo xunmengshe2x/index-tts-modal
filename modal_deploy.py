@@ -6,8 +6,7 @@ from typing import Optional
 from modal import App, method, Image, Secret
 
 from modal_config import (
-    configure_image, MODEL_FILES, GPU_CONFIG,
-    CHECKPOINT_DIR, MODEL_VOLUME
+    configure_image, MODEL_FILES, GPU_CONFIG, CHECKPOINT_DIR
 )
 
 # Create app with configured image
