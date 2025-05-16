@@ -12,6 +12,7 @@ def configure_image():
             "ffmpeg",  # Required for audio processing
             "build-essential",  # For compiling extensions
             "git",
+            "wget",
         ])
         # Install Python dependencies from requirements.txt
         .pip_install([
@@ -38,7 +39,7 @@ def configure_image():
             "vocos==0.1.0",
             "tensorboard==2.9.1",
             "gradio",
-            "wget"
+            "wget",
         ])
         # Install the package itself
         .pip_install("git+https://github.com/index-tts/index-tts.git")
