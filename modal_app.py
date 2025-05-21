@@ -1,5 +1,8 @@
 import os
 import modal
+from fastapi import FastAPI, Body, Request
+from pydantic import BaseModel
+from typing import Optional
 
 # Define a custom image with all dependencies
 image = modal.Image.debian_slim().pip_install(
@@ -36,6 +39,15 @@ volume = modal.Volume.from_name("index-tts-models", create_if_missing=True)
 
 # Create a Modal app
 app = modal.App("index-tts-inference", image=image)
+
+# Define request models for your endpoints
+class InferenceRequest(BaseModel):
+    text: str
+    voice_url: str
+
+class InferenceFileRequest(BaseModel):
+    text: str
+    voice_base64: str
 
 @app.function(
     gpu="A10G",  # You can change this to "T4", "A100", etc. based on your needs
@@ -138,17 +150,16 @@ def run_inference(
 
 # Define a web endpoint for inference with URL
 @app.function(
-    gpu="A10G",  # You can change this to "T4", "A100", etc. based on your needs
-    timeout=600,  # 10-minute timeout
+    gpu="A10G",
+    timeout=600,
     volumes={"/checkpoints": volume}
 )
-@modal.fastapi_endpoint(method="POST")  # Updated from web_endpoint to fastapi_endpoint
-async def inference_api(request):
+@modal.fastapi_endpoint()
+async def inference_api(request: Request):
     """Web endpoint for Index-TTS inference using a voice URL."""
-    import json
     import base64
     
-    # Parse the request
+    # Parse the request body
     data = await request.json()
     text = data.get("text")
     voice_url = data.get("voice_url")
@@ -169,19 +180,18 @@ async def inference_api(request):
 
 # Define a web endpoint for inference with base64-encoded file
 @app.function(
-    gpu="A10G",  # You can change this to "T4", "A100", etc. based on your needs
-    timeout=600,  # 10-minute timeout
+    gpu="A10G",
+    timeout=600,
     volumes={"/checkpoints": volume}
 )
-@modal.fastapi_endpoint(method="POST")  # Updated from web_endpoint to fastapi_endpoint
-async def inference_api_with_file(request):
+@modal.fastapi_endpoint()
+async def inference_api_with_file(request: Request):
     """Web endpoint for Index-TTS inference with direct file upload."""
-    import json
     import base64
     import tempfile
     import os
     
-    # Parse the request
+    # Parse the request body
     data = await request.json()
     text = data.get("text")
     voice_base64 = data.get("voice_base64")
@@ -212,7 +222,7 @@ async def inference_api_with_file(request):
 
 # Define a health check endpoint
 @app.function()
-@modal.fastapi_endpoint(method="GET")  # Updated from web_endpoint to fastapi_endpoint
+@modal.fastapi_endpoint()
 async def health():
     """Health check endpoint."""
     return {"status": "ok", "service": "index-tts-inference"}
