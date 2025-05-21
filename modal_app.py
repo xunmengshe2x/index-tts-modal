@@ -204,6 +204,7 @@ async def inference_api_with_file(request: Request):
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
         temp_file.write(base64.b64decode(voice_base64))
         voice_path = temp_file.name
+        print('Here is the voice path', voice_path)
 
     try:
         # Run inference with the temporary file
