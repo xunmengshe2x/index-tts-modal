@@ -201,6 +201,7 @@ async def inference_api(request: Request):
 
 # Define a web endpoint for inference with base64-encoded file
 # Define a web endpoint for inference with base64-encoded file
+# Define a web endpoint for inference with base64-encoded file
 @app.function(
     gpu="A10G",
     timeout=600,
@@ -214,6 +215,7 @@ async def inference_api_with_file(request: Request):
     import urllib.request
     import logging
     import sys
+    import importlib.util
 
     # Set up logging
     logging.basicConfig(level=logging.INFO)
@@ -251,25 +253,23 @@ async def inference_api_with_file(request: Request):
         output_path = os.path.join(outputs_dir, "output.wav")
 
         # Add the cloned repository to the Python path
-        sys.path.append("/checkpoints/index-tts/indextts")
+        sys.path.append("/checkpoints/index-tts")
 
-        # Print the contents of the current directory
-        current_dir = os.getcwd()
-        print(f"Contents of current directory {current_dir}: {os.listdir(current_dir)}")
-
-        
         # Change the current working directory to /checkpoints
         os.chdir("/checkpoints")
+
         # Print the contents of the current directory
         current_dir = os.getcwd()
         print(f"Contents of current directory {current_dir}: {os.listdir(current_dir)}")
 
-        
-        # Import IndexTTS after adding the path
-        from indextts.infer import IndexTTS
+        # Dynamically import the module
+        module_path = "/checkpoints/index-tts/indextts/infer.py"
+        spec = importlib.util.spec_from_file_location("indextts.infer", module_path)
+        indextts_infer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(indextts_infer)
 
         # Initialize IndexTTS
-        tts = IndexTTS(cfg_path="/checkpoints/config.yaml", model_dir="/checkpoints")
+        tts = indextts_infer.IndexTTS(cfg_path="/checkpoints/config.yaml", model_dir="/checkpoints")
 
         # Run inference
         tts.infer(audio_prompt=voice_path, text=text, output_path=output_path)
