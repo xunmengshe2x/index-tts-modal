@@ -32,7 +32,7 @@ image = modal.Image.debian_slim().pip_install(
 )
 
 # Add CUDA support and ffmpeg
-image = image.apt_install("ffmpeg")
+image = image.apt_install("ffmpeg","wget")
 
 # Create a Modal volume to store model files
 volume = modal.Volume.from_name("index-tts-models", create_if_missing=True)
