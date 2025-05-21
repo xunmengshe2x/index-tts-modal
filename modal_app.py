@@ -25,8 +25,7 @@ image = modal.Image.debian_slim().pip_install(
     "tqdm",
     "torch",
     "torchaudio",
-    "fastapi[standard]"  # Add this line to install FastAPI
-
+    "fastapi[standard]"  # Required for web endpoints
 )
 
 # Add CUDA support and ffmpeg
@@ -80,8 +79,9 @@ def download_models():
 )
 def run_inference(
     text: str,
-    voice_url: str,
-    output_filename: str = "output.wav"
+    voice_path: str,
+    output_filename: str = "output.wav",
+    is_url: bool = True
 ):
     """Run Index-TTS inference with the given text and voice prompt."""
     import os
@@ -91,9 +91,13 @@ def run_inference(
     
     # Create a temporary directory for input/output files
     with tempfile.TemporaryDirectory() as temp_dir:
-        # Download the voice prompt
-        voice_path = os.path.join(temp_dir, "voice_prompt.wav")
-        urllib.request.urlretrieve(voice_url, voice_path)
+        # Handle voice prompt (either from URL or local path)
+        local_voice_path = os.path.join(temp_dir, "voice_prompt.wav")
+        if is_url:
+            urllib.request.urlretrieve(voice_path, local_voice_path)
+        else:
+            # If it's already a local path, just use it
+            local_voice_path = voice_path
         
         # Set up output path
         output_path = os.path.join(temp_dir, output_filename)
@@ -112,7 +116,7 @@ def run_inference(
             "-m",
             "indextts.cli",
             f'"{text}"',
-            "--voice", voice_path,
+            "--voice", local_voice_path,
             "--output_path", output_path,
             "--config", "/checkpoints/config.yaml",
             "--model_dir", "/checkpoints",
@@ -132,15 +136,15 @@ def run_inference(
         
         return output_data
 
-# Define a web endpoint for inference
+# Define a web endpoint for inference with URL
 @app.function(
     gpu="A10G",  # You can change this to "T4", "A100", etc. based on your needs
     timeout=600,  # 10-minute timeout
     volumes={"/checkpoints": volume}
 )
-@modal.web_endpoint(method="POST")
+@modal.fastapi_endpoint(method="POST")  # Updated from web_endpoint to fastapi_endpoint
 async def inference_api(request):
-    """Web endpoint for Index-TTS inference."""
+    """Web endpoint for Index-TTS inference using a voice URL."""
     import json
     import base64
     
@@ -156,16 +160,59 @@ async def inference_api(request):
     download_models.remote()
     
     # Run inference
-    output_data = run_inference.remote(text, voice_url)
+    output_data = run_inference.remote(text, voice_url, is_url=True)
     
     # Encode the output as base64
     encoded_output = base64.b64encode(output_data).decode("utf-8")
     
     return {"audio_base64": encoded_output}
 
+# Define a web endpoint for inference with base64-encoded file
+@app.function(
+    gpu="A10G",  # You can change this to "T4", "A100", etc. based on your needs
+    timeout=600,  # 10-minute timeout
+    volumes={"/checkpoints": volume}
+)
+@modal.fastapi_endpoint(method="POST")  # Updated from web_endpoint to fastapi_endpoint
+async def inference_api_with_file(request):
+    """Web endpoint for Index-TTS inference with direct file upload."""
+    import json
+    import base64
+    import tempfile
+    import os
+    
+    # Parse the request
+    data = await request.json()
+    text = data.get("text")
+    voice_base64 = data.get("voice_base64")
+    
+    if not text or not voice_base64:
+        return {"error": "Missing required parameters: text and voice_base64"}
+    
+    # Ensure models are downloaded
+    download_models.remote()
+    
+    # Create a temporary file for the voice prompt
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+        temp_file.write(base64.b64decode(voice_base64))
+        voice_path = temp_file.name
+    
+    try:
+        # Run inference with the temporary file
+        output_data = run_inference.remote(text, voice_path, is_url=False)
+        
+        # Encode the output as base64
+        encoded_output = base64.b64encode(output_data).decode("utf-8")
+        
+        return {"audio_base64": encoded_output}
+    finally:
+        # Clean up the temporary file
+        if os.path.exists(voice_path):
+            os.remove(voice_path)
+
 # Define a health check endpoint
 @app.function()
-@modal.web_endpoint(method="GET")
+@modal.fastapi_endpoint(method="GET")  # Updated from web_endpoint to fastapi_endpoint
 async def health():
     """Health check endpoint."""
     return {"status": "ok", "service": "index-tts-inference"}
