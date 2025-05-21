@@ -25,7 +25,9 @@ image = modal.Image.debian_slim().pip_install(
     "tqdm",
     "torch",
     "torchaudio",
-    "fastapi[standard]"  # Required for web endpoints
+    "fastapi[standard]",  # Required for web endpoints
+    "pydantic>=2.0.0",    # Explicitly add Pydantic
+    "typing-extensions"   # Often needed with Pydantic
 )
 
 # Add CUDA support and ffmpeg
@@ -138,17 +140,18 @@ def run_inference(
 
 # Define a web endpoint for inference with URL
 @app.function(
-    gpu="A10G",  # You can change this to "T4", "A100", etc. based on your needs
-    timeout=600,  # 10-minute timeout
+    gpu="A10G",
+    timeout=600,
     volumes={"/checkpoints": volume}
 )
-@modal.fastapi_endpoint(method="POST")  # Updated from web_endpoint to fastapi_endpoint
+@modal.fastapi_endpoint()
 async def inference_api(request):
     """Web endpoint for Index-TTS inference using a voice URL."""
-    import json
+    # Import FastAPI dependencies inside the function
+    from fastapi import Request
     import base64
     
-    # Parse the request
+    # Parse the request body
     data = await request.json()
     text = data.get("text")
     voice_url = data.get("voice_url")
@@ -169,19 +172,20 @@ async def inference_api(request):
 
 # Define a web endpoint for inference with base64-encoded file
 @app.function(
-    gpu="A10G",  # You can change this to "T4", "A100", etc. based on your needs
-    timeout=600,  # 10-minute timeout
+    gpu="A10G",
+    timeout=600,
     volumes={"/checkpoints": volume}
 )
-@modal.fastapi_endpoint(method="POST")  # Updated from web_endpoint to fastapi_endpoint
+@modal.fastapi_endpoint()
 async def inference_api_with_file(request):
     """Web endpoint for Index-TTS inference with direct file upload."""
-    import json
+    # Import FastAPI dependencies inside the function
+    from fastapi import Request
     import base64
     import tempfile
     import os
     
-    # Parse the request
+    # Parse the request body
     data = await request.json()
     text = data.get("text")
     voice_base64 = data.get("voice_base64")
@@ -212,7 +216,7 @@ async def inference_api_with_file(request):
 
 # Define a health check endpoint
 @app.function()
-@modal.fastapi_endpoint(method="GET")  # Updated from web_endpoint to fastapi_endpoint
+@modal.fastapi_endpoint()
 async def health():
     """Health check endpoint."""
     return {"status": "ok", "service": "index-tts-inference"}
