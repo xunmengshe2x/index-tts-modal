@@ -88,10 +88,11 @@ def run_inference(
 ):
     """Run Index-TTS inference with the given text and voice prompt."""
     import os
+    import subprocess
     import tempfile
     import urllib.request
     import logging
-    from indextts.infer import IndexTTS
+    import sys
 
     # Set up logging
     logging.basicConfig(level=logging.INFO)
@@ -99,6 +100,17 @@ def run_inference(
 
     # Create a temporary directory for input/output files
     with tempfile.TemporaryDirectory() as temp_dir:
+        # Clone the Index-TTS repository
+        subprocess.run(
+            "git clone https://github.com/index-tts/index-tts.git",
+            shell=True,
+            check=True,
+            cwd=temp_dir
+        )
+
+        # Add the cloned repository to the Python path
+        sys.path.append(os.path.join(temp_dir, "index-tts"))
+
         # Handle voice prompt (either from URL or local path)
         local_voice_path = os.path.join(temp_dir, "voice_prompt.wav")
         if is_url:
@@ -111,6 +123,7 @@ def run_inference(
         output_path = os.path.join(temp_dir, output_filename)
 
         # Initialize IndexTTS
+        from indextts.infer import IndexTTS
         tts = IndexTTS(cfg_path="/checkpoints/config.yaml", model_dir="/checkpoints")
 
         # Run inference
