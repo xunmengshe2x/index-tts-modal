@@ -108,7 +108,7 @@ def run_inference(
             check=True,
             cwd=temp_dir
         )
-
+        print('here is the temp directory',temp_dir)
         # Add the cloned repository to the Python path
         sys.path.append(os.path.join(temp_dir, "index-tts"))
 
