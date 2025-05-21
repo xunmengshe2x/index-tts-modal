@@ -22,15 +22,28 @@ jobs:
       
       - name: Configure Modal
         run: |
+          # Create the .modal directory
           mkdir -p ~/.modal
-          cat > ~/.modal.toml << EOF
-          [user]
-          token_id = "${{ secrets.MODAL_TOKEN_ID }}"
-          token_secret = "${{ secrets.MODAL_TOKEN_SECRET }}"
-          EOF
+          
+          # Create the token file with proper permissions
+          touch ~/.modal.toml
+          chmod 600 ~/.modal.toml
+          
+          # Write the token configuration
+          echo "[user]" > ~/.modal.toml
+          echo "token_id = \"${{ secrets.MODAL_TOKEN_ID }}\"" >> ~/.modal.toml
+          echo "token_secret = \"${{ secrets.MODAL_TOKEN_SECRET }}\"" >> ~/.modal.toml
+          
+          # Verify the token file exists
+          ls -la ~/.modal/
+          cat ~/.modal.toml
       
       - name: Deploy to Modal
         run: |
+          # Try to authenticate first
+          modal token current
+          
+          # Then deploy
           modal deploy modal_app.py
       
       - name: Verify deployment
