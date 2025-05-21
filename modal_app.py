@@ -31,8 +31,8 @@ image = modal.Image.debian_slim().pip_install(
     "typing-extensions"   # Often needed with Pydantic
 )
 
-# Add CUDA support and ffmpeg
-image = image.apt_install("ffmpeg","wget","git")
+# Add CUDA support, ffmpeg, wget, and git
+image = image.apt_install("ffmpeg", "wget", "git")
 
 # Create a Modal volume to store model files
 volume = modal.Volume.from_name("index-tts-models", create_if_missing=True)
@@ -91,6 +91,11 @@ def run_inference(
     import subprocess
     import tempfile
     import urllib.request
+    import logging
+
+    # Set up logging
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
 
     # Create a temporary directory for input/output files
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -126,12 +131,18 @@ def run_inference(
             "--fp16"
         ]
 
-        subprocess.run(
-            " ".join(cmd),
-            shell=True,
-            check=True,
-            cwd=os.path.join(temp_dir, "index-tts")
-        )
+        logger.info(f"Running command: {' '.join(cmd)}")
+
+        try:
+            subprocess.run(
+                " ".join(cmd),
+                shell=True,
+                check=True,
+                cwd=os.path.join(temp_dir, "index-tts")
+            )
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Command failed with error: {e}")
+            raise
 
         # Read the output file
         with open(output_path, "rb") as f:
