@@ -211,6 +211,14 @@ async def inference_api_with_file(request: Request):
         temp_dir = os.path.dirname(voice_path)
         print('Contents of the temporary directory:', os.listdir(temp_dir))
 
+    # Check if the file is readable
+    if os.access(voice_path, os.R_OK):
+        print("File is readable")
+    else:
+        print("File is not readable")
+
+    
+
     try:
         # Run inference with the temporary file
         output_data = run_inference.remote(text, voice_path, is_url=False)
