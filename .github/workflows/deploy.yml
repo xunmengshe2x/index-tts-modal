@@ -30,7 +30,7 @@ jobs:
           chmod 600 ~/.modal.toml
           
           # Write the token configuration
-          echo "[user]" > ~/.modal.toml
+          echo "[user]" > \"${{ [secrets.MODAL_USERNAME] }}\"" >> ~/.modal.toml
           echo "token_id = \"${{ secrets.MODAL_TOKEN_ID }}\"" >> ~/.modal.toml
           echo "token_secret = \"${{ secrets.MODAL_TOKEN_SECRET }}\"" >> ~/.modal.toml
           
