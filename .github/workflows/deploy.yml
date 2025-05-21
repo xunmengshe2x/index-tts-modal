@@ -29,19 +29,16 @@ jobs:
           touch ~/.modal.toml
           chmod 600 ~/.modal.toml
           
-          # Write the token configuration
-          echo "[user]" > ~/.modal.toml
-          echo "username = \"${{ secrets.MODAL_USERNAME }}\"" >> ~/.modal.toml
-          echo "token_id = \"${{ secrets.MODAL_TOKEN_ID }}\"" >> ~/.modal.toml
-          echo "token_secret = \"${{ secrets.MODAL_TOKEN_SECRET }}\"" >> ~/.modal.toml
-          
-          # Verify the token file exists
-          ls -la ~/.modal/
-          cat ~/.modal.toml
+          # Write the token configuration - SIMPLIFIED FORMAT
+          cat > ~/.modal.toml << EOF
+          [user]
+          token_id = "${{ secrets.MODAL_TOKEN_ID }}"
+          token_secret = "${{ secrets.MODAL_TOKEN_SECRET }}"
+          EOF
       
       - name: Deploy to Modal
         run: |
-          # Deploy directly
+          # Deploy directly without verification
           modal deploy modal_app.py
       
       - name: Verify deployment
