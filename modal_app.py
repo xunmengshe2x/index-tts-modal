@@ -256,6 +256,14 @@ async def inference_api_with_file(request: Request):
         # Print the contents of the current directory
         current_dir = os.getcwd()
         print(f"Contents of current directory {current_dir}: {os.listdir(current_dir)}")
+
+        
+        # Change the current working directory to /checkpoints
+        os.chdir("/checkpoints")
+        # Print the contents of the current directory
+        current_dir = os.getcwd()
+        print(f"Contents of current directory {current_dir}: {os.listdir(current_dir)}")
+
         
         # Import IndexTTS after adding the path
         from indextts.infer import IndexTTS
