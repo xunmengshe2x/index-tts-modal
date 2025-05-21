@@ -81,6 +81,33 @@ def download_models():
     timeout=600,  # 10-minute timeout
     volumes={"/checkpoints": volume}
 )
+def download_repository():
+    """Download the Index-TTS repository to the volume."""
+    import subprocess
+    import os
+
+    # Create repository directory if it doesn't exist
+    repo_dir = "/checkpoints/index-tts"
+    if os.path.exists(repo_dir):
+        print("Repository already downloaded.")
+        return
+
+    # Clone the repository
+    subprocess.run(
+        "git clone https://github.com/index-tts/index-tts.git",
+        shell=True,
+        check=True,
+        cwd="/checkpoints"
+    )
+
+    print("Repository downloaded successfully.")
+    return True
+
+@app.function(
+    gpu="A10G",  # You can change this to "T4", "A100", etc. based on your needs
+    timeout=600,  # 10-minute timeout
+    volumes={"/checkpoints": volume}
+)
 def run_inference(
     text: str,
     voice_path: str,
@@ -90,7 +117,6 @@ def run_inference(
     """Run Index-TTS inference with the given text and voice prompt."""
     import os
     import subprocess
-    import tempfile
     import urllib.request
     import logging
     import sys
@@ -99,52 +125,48 @@ def run_inference(
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
 
-    # Create a temporary directory for input/output files
-    with tempfile.TemporaryDirectory() as temp_dir:
-        # Clone the Index-TTS repository
-        subprocess.run(
-            "git clone https://github.com/index-tts/index-tts.git",
-            shell=True,
-            check=True,
-            cwd=temp_dir
-        )
-        print('here is the temp directory',temp_dir)
-        # Add the cloned repository to the Python path
-        sys.path.append(os.path.join(temp_dir, "index-tts"))
+    # Create inputs directory if it doesn't exist
+    inputs_dir = "/checkpoints/inputs"
+    os.makedirs(inputs_dir, exist_ok=True)
 
-        # Handle voice prompt (either from URL or local path)
-        local_voice_path = os.path.join(temp_dir, "voice_prompt.wav")
-        if is_url:
-            urllib.request.urlretrieve(voice_path, local_voice_path)
-        else:
-            # If it's already a local path, just use it
-            local_voice_path = voice_path
+    # Handle voice prompt (either from URL or local path)
+    local_voice_path = os.path.join(inputs_dir, "voice_prompt.wav")
+    if is_url:
+        urllib.request.urlretrieve(voice_path, local_voice_path)
+    else:
+        # If it's already a local path, just use it
+        local_voice_path = voice_path
 
-        # Debug: Check if the voice prompt file exists
-        if not os.path.exists(local_voice_path):
-            logger.error(f"Voice prompt file does not exist: {local_voice_path}")
-            raise FileNotFoundError(f"Voice prompt file does not exist: {local_voice_path}")
+    # Debug: Check if the voice prompt file exists
+    if not os.path.exists(local_voice_path):
+        logger.error(f"Voice prompt file does not exist: {local_voice_path}")
+        raise FileNotFoundError(f"Voice prompt file does not exist: {local_voice_path}")
 
-        # Set up output path
-        output_path = os.path.join(temp_dir, output_filename)
+    # Set up output path
+    outputs_dir = "/checkpoints/outputs"
+    os.makedirs(outputs_dir, exist_ok=True)
+    output_path = os.path.join(outputs_dir, output_filename)
 
-        # Initialize IndexTTS
-        from indextts.infer import IndexTTS
-        tts = IndexTTS(cfg_path="/checkpoints/config.yaml", model_dir="/checkpoints")
+    # Add the cloned repository to the Python path
+    sys.path.append("/checkpoints/index-tts")
 
-        # Run inference
-        tts.infer(audio_prompt=local_voice_path, text=text, output_path=output_path)
+    # Initialize IndexTTS
+    from indextts.infer import IndexTTS
+    tts = IndexTTS(cfg_path="/checkpoints/config.yaml", model_dir="/checkpoints")
 
-        # Debug: Check if the output file exists
-        if not os.path.exists(output_path):
-            logger.error(f"Output file does not exist: {output_path}")
-            raise FileNotFoundError(f"Output file does not exist: {output_path}")
+    # Run inference
+    tts.infer(audio_prompt=local_voice_path, text=text, output_path=output_path)
 
-        # Read the output file
-        with open(output_path, "rb") as f:
-            output_data = f.read()
+    # Debug: Check if the output file exists
+    if not os.path.exists(output_path):
+        logger.error(f"Output file does not exist: {output_path}")
+        raise FileNotFoundError(f"Output file does not exist: {output_path}")
 
-        return output_data
+    # Read the output file
+    with open(output_path, "rb") as f:
+        output_data = f.read()
+
+    return output_data
 
 # Define a web endpoint for inference with URL
 @app.function(
@@ -165,8 +187,9 @@ async def inference_api(request: Request):
     if not text or not voice_url:
         return {"error": "Missing required parameters: text and voice_url"}
 
-    # Ensure models are downloaded
+    # Ensure models and repository are downloaded
     download_models.remote()
+    download_repository.remote()
 
     # Run inference
     output_data = run_inference.remote(text, voice_url, is_url=True)
@@ -186,7 +209,6 @@ async def inference_api(request: Request):
 async def inference_api_with_file(request: Request):
     """Web endpoint for Index-TTS inference with direct file upload."""
     import base64
-    import tempfile
     import os
 
     # Parse the request body
@@ -197,30 +219,20 @@ async def inference_api_with_file(request: Request):
     if not text or not voice_base64:
         return {"error": "Missing required parameters: text and voice_base64"}
 
-    # Ensure models are downloaded
+    # Ensure models and repository are downloaded
     download_models.remote()
+    download_repository.remote()
 
-    # Create a temporary file for the voice prompt
-    # Create a temporary file for the voice prompt
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+    # Create a file for the voice prompt
+    inputs_dir = "/checkpoints/inputs"
+    os.makedirs(inputs_dir, exist_ok=True)
+    voice_path = os.path.join(inputs_dir, "voice_prompt.wav")
+
+    with open(voice_path, "wb") as temp_file:
         temp_file.write(base64.b64decode(voice_base64))
-        voice_path = temp_file.name
-        print('Here is the voice path:', voice_path)
-    
-        # Print the contents of the temporary directory
-        temp_dir = os.path.dirname(voice_path)
-        print('Contents of the temporary directory:', os.listdir(temp_dir))
-
-    # Check if the file is readable
-    if os.access(voice_path, os.R_OK):
-        print("File is readable")
-    else:
-        print("File is not readable")
-
-    
 
     try:
-        # Run inference with the temporary file
+        # Run inference with the file
         output_data = run_inference.remote(text, voice_path, is_url=False)
 
         # Encode the output as base64
@@ -228,7 +240,7 @@ async def inference_api_with_file(request: Request):
 
         return {"audio_base64": encoded_output}
     finally:
-        # Clean up the temporary file
+        # Clean up the file
         if os.path.exists(voice_path):
             os.remove(voice_path)
 
