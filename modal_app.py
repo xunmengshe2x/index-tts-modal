@@ -26,6 +26,7 @@ image = modal.Image.debian_slim().pip_install(
     "tqdm",
     "torch",
     "torchaudio",
+    "WeTextProcessing",
     "fastapi[standard]",  # Required for web endpoints
     "pydantic>=2.0.0",    # Explicitly add Pydantic
     "typing-extensions"   # Often needed with Pydantic
