@@ -200,6 +200,7 @@ async def inference_api(request: Request):
     return {"audio_base64": encoded_output}
 
 # Define a web endpoint for inference with base64-encoded file
+# Define a web endpoint for inference with base64-encoded file
 @app.function(
     gpu="A10G",
     timeout=600,
@@ -213,7 +214,6 @@ async def inference_api_with_file(request: Request):
     import urllib.request
     import logging
     import sys
-    from indextts.infer import IndexTTS
 
     # Set up logging
     logging.basicConfig(level=logging.INFO)
@@ -251,7 +251,10 @@ async def inference_api_with_file(request: Request):
         output_path = os.path.join(outputs_dir, "output.wav")
 
         # Add the cloned repository to the Python path
-        sys.path.append("/checkpoints/index-tts")
+        sys.path.append("/checkpoints/index-tts/indextts")
+
+        # Import IndexTTS after adding the path
+        from indextts.infer import IndexTTS
 
         # Initialize IndexTTS
         tts = IndexTTS(cfg_path="/checkpoints/config.yaml", model_dir="/checkpoints")
@@ -276,6 +279,7 @@ async def inference_api_with_file(request: Request):
         # Clean up the file
         if os.path.exists(voice_path):
             os.remove(voice_path)
+
 
 
 # Define a health check endpoint
