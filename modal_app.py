@@ -24,7 +24,9 @@ image = modal.Image.debian_slim().pip_install(
     "librosa",
     "tqdm",
     "torch",
-    "torchaudio"
+    "torchaudio",
+    "fastapi[standard]"  # Add this line to install FastAPI
+
 )
 
 # Add CUDA support and ffmpeg
