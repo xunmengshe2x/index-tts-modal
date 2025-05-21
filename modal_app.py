@@ -88,10 +88,10 @@ def run_inference(
 ):
     """Run Index-TTS inference with the given text and voice prompt."""
     import os
-    import subprocess
     import tempfile
     import urllib.request
     import logging
+    from indextts.infer import IndexTTS
 
     # Set up logging
     logging.basicConfig(level=logging.INFO)
@@ -110,39 +110,11 @@ def run_inference(
         # Set up output path
         output_path = os.path.join(temp_dir, output_filename)
 
-        # Clone the Index-TTS repository
-        subprocess.run(
-            "git clone https://github.com/index-tts/index-tts.git",
-            shell=True,
-            check=True,
-            cwd=temp_dir
-        )
+        # Initialize IndexTTS
+        tts = IndexTTS(cfg_path="/checkpoints/config.yaml", model_dir="/checkpoints")
 
-        # Run inference using the CLI
-        cmd = [
-            "python",
-            "-m",
-            "indextts.cli",
-            f'"{text}"',
-            "--voice", local_voice_path,
-            "--output_path", output_path,
-            "--config", "/checkpoints/config.yaml",
-            "--model_dir", "/checkpoints",
-            "--fp16"
-        ]
-
-        logger.info(f"Running command: {' '.join(cmd)}")
-
-        try:
-            subprocess.run(
-                " ".join(cmd),
-                shell=True,
-                check=True,
-                cwd=os.path.join(temp_dir, "index-tts")
-            )
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Command failed with error: {e}")
-            raise
+        # Run inference
+        tts.infer(audio_prompt=local_voice_path, text=text, output_path=output_path)
 
         # Read the output file
         with open(output_path, "rb") as f:
