@@ -120,6 +120,11 @@ def run_inference(
             # If it's already a local path, just use it
             local_voice_path = voice_path
 
+        # Debug: Check if the voice prompt file exists
+        if not os.path.exists(local_voice_path):
+            logger.error(f"Voice prompt file does not exist: {local_voice_path}")
+            raise FileNotFoundError(f"Voice prompt file does not exist: {local_voice_path}")
+
         # Set up output path
         output_path = os.path.join(temp_dir, output_filename)
 
@@ -129,6 +134,11 @@ def run_inference(
 
         # Run inference
         tts.infer(audio_prompt=local_voice_path, text=text, output_path=output_path)
+
+        # Debug: Check if the output file exists
+        if not os.path.exists(output_path):
+            logger.error(f"Output file does not exist: {output_path}")
+            raise FileNotFoundError(f"Output file does not exist: {output_path}")
 
         # Read the output file
         with open(output_path, "rb") as f:
