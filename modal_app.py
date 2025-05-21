@@ -210,6 +210,14 @@ async def inference_api_with_file(request: Request):
     """Web endpoint for Index-TTS inference with direct file upload."""
     import base64
     import os
+    import urllib.request
+    import logging
+    import sys
+    from indextts.infer import IndexTTS
+
+    # Set up logging
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
 
     # Parse the request body
     data = await request.json()
@@ -232,8 +240,33 @@ async def inference_api_with_file(request: Request):
         temp_file.write(base64.b64decode(voice_base64))
 
     try:
-        # Run inference with the file
-        output_data = run_inference.remote(text, voice_path, is_url=False)
+        # Debug: Check if the voice prompt file exists
+        if not os.path.exists(voice_path):
+            logger.error(f"Voice prompt file does not exist: {voice_path}")
+            raise FileNotFoundError(f"Voice prompt file does not exist: {voice_path}")
+
+        # Set up output path
+        outputs_dir = "/checkpoints/outputs"
+        os.makedirs(outputs_dir, exist_ok=True)
+        output_path = os.path.join(outputs_dir, "output.wav")
+
+        # Add the cloned repository to the Python path
+        sys.path.append("/checkpoints/index-tts")
+
+        # Initialize IndexTTS
+        tts = IndexTTS(cfg_path="/checkpoints/config.yaml", model_dir="/checkpoints")
+
+        # Run inference
+        tts.infer(audio_prompt=voice_path, text=text, output_path=output_path)
+
+        # Debug: Check if the output file exists
+        if not os.path.exists(output_path):
+            logger.error(f"Output file does not exist: {output_path}")
+            raise FileNotFoundError(f"Output file does not exist: {output_path}")
+
+        # Read the output file
+        with open(output_path, "rb") as f:
+            output_data = f.read()
 
         # Encode the output as base64
         encoded_output = base64.b64encode(output_data).decode("utf-8")
@@ -243,6 +276,7 @@ async def inference_api_with_file(request: Request):
         # Clean up the file
         if os.path.exists(voice_path):
             os.remove(voice_path)
+
 
 # Define a health check endpoint
 @app.function()
