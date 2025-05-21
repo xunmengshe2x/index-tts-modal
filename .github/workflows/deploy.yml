@@ -1,0 +1,34 @@
+name: Deploy Index-TTS to Modal
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      
+      - name: Install Modal
+        run: pip install modal
+      
+      - name: Configure Modal
+        run: |
+          echo "${{ secrets.MODAL_TOKEN_TOML }}" > ~/.modal.toml
+      
+      - name: Deploy to Modal
+        run: |
+          modal deploy modal_app.py
+      
+      - name: Verify deployment
+        run: |
+          echo "Deployment completed. The service is now available at:"
+          echo "https://your-modal-username--index-tts-inference-inference-api.modal.run"
