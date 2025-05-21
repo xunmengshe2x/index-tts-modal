@@ -41,10 +41,7 @@ jobs:
       
       - name: Deploy to Modal
         run: |
-          # Try to authenticate first
-          modal token current
-          
-          # Then deploy
+          # Deploy directly
           modal deploy modal_app.py
       
       - name: Verify deployment
