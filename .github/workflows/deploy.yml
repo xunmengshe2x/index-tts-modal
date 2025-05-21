@@ -22,7 +22,12 @@ jobs:
       
       - name: Configure Modal
         run: |
-          echo "${{ secrets.MODAL_TOKEN_TOML }}" > ~/.modal.toml
+          mkdir -p ~/.modal
+          cat > ~/.modal.toml << EOF
+          [user]
+          token_id = "${{ secrets.MODAL_TOKEN_ID }}"
+          token_secret = "${{ secrets.MODAL_TOKEN_SECRET }}"
+          EOF
       
       - name: Deploy to Modal
         run: |
@@ -31,4 +36,4 @@ jobs:
       - name: Verify deployment
         run: |
           echo "Deployment completed. The service is now available at:"
-          echo "https://your-modal-username--index-tts-inference-inference-api.modal.run"
+          echo "https://${{ secrets.MODAL_USERNAME }}--index-tts-inference-inference-api.modal.run"
