@@ -201,10 +201,15 @@ async def inference_api_with_file(request: Request):
     download_models.remote()
 
     # Create a temporary file for the voice prompt
+    # Create a temporary file for the voice prompt
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
         temp_file.write(base64.b64decode(voice_base64))
         voice_path = temp_file.name
-        print('Here is the voice path', voice_path)
+        print('Here is the voice path:', voice_path)
+    
+        # Print the contents of the temporary directory
+        temp_dir = os.path.dirname(voice_path)
+        print('Contents of the temporary directory:', os.listdir(temp_dir))
 
     try:
         # Run inference with the temporary file
