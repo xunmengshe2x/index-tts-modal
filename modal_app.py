@@ -1,5 +1,6 @@
 import os
 import modal
+from fastapi import Request
 
 # Define a custom image with all dependencies
 image = modal.Image.debian_slim().pip_install(
@@ -48,15 +49,15 @@ def download_models():
     """Download Index-TTS model files to the volume."""
     import subprocess
     import os
-    
+
     # Create checkpoints directory if it doesn't exist
     os.makedirs("/checkpoints", exist_ok=True)
-    
+
     # Check if models are already downloaded
     if os.path.exists("/checkpoints/gpt.pth"):
         print("Models already downloaded.")
         return
-    
+
     # Download models using wget
     commands = [
         "wget https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/bigvgan_discriminator.pth -P /checkpoints",
@@ -67,10 +68,10 @@ def download_models():
         "wget https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/unigram_12000.vocab -P /checkpoints",
         "wget https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/config.yaml -P /checkpoints"
     ]
-    
+
     for cmd in commands:
-        subprocess.run(cmd, shell=True, check=True )
-    
+        subprocess.run(cmd, shell=True, check=True)
+
     print("Models downloaded successfully.")
     return True
 
@@ -90,7 +91,7 @@ def run_inference(
     import subprocess
     import tempfile
     import urllib.request
-    
+
     # Create a temporary directory for input/output files
     with tempfile.TemporaryDirectory() as temp_dir:
         # Handle voice prompt (either from URL or local path)
@@ -100,18 +101,18 @@ def run_inference(
         else:
             # If it's already a local path, just use it
             local_voice_path = voice_path
-        
+
         # Set up output path
         output_path = os.path.join(temp_dir, output_filename)
-        
+
         # Clone the Index-TTS repository
         subprocess.run(
             "git clone https://github.com/index-tts/index-tts.git",
             shell=True,
             check=True,
             cwd=temp_dir
-         )
-        
+        )
+
         # Run inference using the CLI
         cmd = [
             "python",
@@ -124,18 +125,18 @@ def run_inference(
             "--model_dir", "/checkpoints",
             "--fp16"
         ]
-        
+
         subprocess.run(
             " ".join(cmd),
             shell=True,
             check=True,
             cwd=os.path.join(temp_dir, "index-tts")
         )
-        
+
         # Read the output file
         with open(output_path, "rb") as f:
             output_data = f.read()
-        
+
         return output_data
 
 # Define a web endpoint for inference with URL
@@ -144,30 +145,28 @@ def run_inference(
     timeout=600,
     volumes={"/checkpoints": volume}
 )
-@modal.fastapi_endpoint()
-async def inference_api(request):
+@modal.fastapi_endpoint(method="POST")
+async def inference_api(request: Request):
     """Web endpoint for Index-TTS inference using a voice URL."""
-    # Import FastAPI dependencies inside the function
-    from fastapi import Request
     import base64
-    
+
     # Parse the request body
     data = await request.json()
     text = data.get("text")
     voice_url = data.get("voice_url")
-    
+
     if not text or not voice_url:
         return {"error": "Missing required parameters: text and voice_url"}
-    
+
     # Ensure models are downloaded
     download_models.remote()
-    
+
     # Run inference
     output_data = run_inference.remote(text, voice_url, is_url=True)
-    
+
     # Encode the output as base64
     encoded_output = base64.b64encode(output_data).decode("utf-8")
-    
+
     return {"audio_base64": encoded_output}
 
 # Define a web endpoint for inference with base64-encoded file
@@ -176,38 +175,36 @@ async def inference_api(request):
     timeout=600,
     volumes={"/checkpoints": volume}
 )
-@modal.fastapi_endpoint()
-async def inference_api_with_file(request):
+@modal.fastapi_endpoint(method="POST")
+async def inference_api_with_file(request: Request):
     """Web endpoint for Index-TTS inference with direct file upload."""
-    # Import FastAPI dependencies inside the function
-    from fastapi import Request
     import base64
     import tempfile
     import os
-    
+
     # Parse the request body
     data = await request.json()
     text = data.get("text")
     voice_base64 = data.get("voice_base64")
-    
+
     if not text or not voice_base64:
         return {"error": "Missing required parameters: text and voice_base64"}
-    
+
     # Ensure models are downloaded
     download_models.remote()
-    
+
     # Create a temporary file for the voice prompt
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
         temp_file.write(base64.b64decode(voice_base64))
         voice_path = temp_file.name
-    
+
     try:
         # Run inference with the temporary file
         output_data = run_inference.remote(text, voice_path, is_url=False)
-        
+
         # Encode the output as base64
         encoded_output = base64.b64encode(output_data).decode("utf-8")
-        
+
         return {"audio_base64": encoded_output}
     finally:
         # Clean up the temporary file
@@ -216,7 +213,7 @@ async def inference_api_with_file(request):
 
 # Define a health check endpoint
 @app.function()
-@modal.fastapi_endpoint()
+@modal.fastapi_endpoint(method="GET")
 async def health():
     """Health check endpoint."""
     return {"status": "ok", "service": "index-tts-inference"}
