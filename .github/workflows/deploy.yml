@@ -29,16 +29,17 @@ jobs:
           touch ~/.modal.toml
           chmod 600 ~/.modal.toml
           
-          # Write the token configuration - SIMPLIFIED FORMAT
+          # Write the exact token configuration format
           cat > ~/.modal.toml << EOF
-          [user]
+          [${{ secrets.MODAL_USERNAME }}]
           token_id = "${{ secrets.MODAL_TOKEN_ID }}"
           token_secret = "${{ secrets.MODAL_TOKEN_SECRET }}"
+          active = true
           EOF
       
       - name: Deploy to Modal
         run: |
-          # Deploy directly without verification
+          # Deploy directly
           modal deploy modal_app.py
       
       - name: Verify deployment
