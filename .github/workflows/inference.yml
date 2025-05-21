@@ -1,0 +1,45 @@
+name: Index-TTS Inference
+
+on:
+  workflow_dispatch:
+    inputs:
+      text:
+        description: 'Text to synthesize'
+        required: true
+        default: 'Hello, this is a test of Index-TTS running on Modal.'
+      voice_url:
+        description: 'URL to voice prompt audio file (WAV format)'
+        required: true
+      output_filename:
+        description: 'Output filename'
+        required: true
+        default: 'output.wav'
+
+jobs:
+  inference:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      
+      - name: Install Modal
+        run: pip install modal
+      
+      - name: Configure Modal
+        run: |
+          echo "${{ secrets.MODAL_TOKEN_TOML }}" > ~/.modal.toml
+      
+      - name: Run inference on Modal
+        run: |
+          modal run modal_app.py --text '${{ github.event.inputs.text }}' --voice_url '${{ github.event.inputs.voice_url }}' --output_path '${{ github.event.inputs.output_filename }}'
+      
+      - name: Upload output audio
+        uses: actions/upload-artifact@v3
+        with:
+          name: tts-output
+          path: ${{ github.event.inputs.output_filename }}
