@@ -253,6 +253,10 @@ async def inference_api_with_file(request: Request):
         # Add the cloned repository to the Python path
         sys.path.append("/checkpoints/index-tts/indextts")
 
+        # Print the contents of the current directory
+        current_dir = os.getcwd()
+        print(f"Contents of current directory {current_dir}: {os.listdir(current_dir)}")
+        
         # Import IndexTTS after adding the path
         from indextts.infer import IndexTTS
 
