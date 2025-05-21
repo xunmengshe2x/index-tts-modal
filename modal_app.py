@@ -1,3 +1,4 @@
+import concurrent.futures
 import os
 import modal
 from fastapi import Request
@@ -48,9 +49,6 @@ app = modal.App("index-tts-inference", image=image)
 )
 def download_models():
     """Download Index-TTS model files to the volume."""
-    import subprocess
-    import os
-
     # Create checkpoints directory if it doesn't exist
     os.makedirs("/checkpoints", exist_ok=True)
 
@@ -59,19 +57,26 @@ def download_models():
         print("Models already downloaded.")
         return
 
-    # Download models using wget
-    commands = [
-        "wget https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/bigvgan_discriminator.pth -P /checkpoints",
-        "wget https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/bigvgan_generator.pth -P /checkpoints",
-        "wget https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/bpe.model -P /checkpoints",
-        "wget https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/dvae.pth -P /checkpoints",
-        "wget https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/gpt.pth -P /checkpoints",
-        "wget https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/unigram_12000.vocab -P /checkpoints",
-        "wget https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/config.yaml -P /checkpoints"
+    # List of model URLs and their corresponding filenames
+    model_urls = [
+        ("https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/bigvgan_discriminator.pth", "bigvgan_discriminator.pth"),
+        ("https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/bigvgan_generator.pth", "bigvgan_generator.pth"),
+        ("https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/bpe.model", "bpe.model"),
+        ("https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/dvae.pth", "dvae.pth"),
+        ("https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/gpt.pth", "gpt.pth"),
+        ("https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/unigram_12000.vocab", "unigram_12000.vocab"),
+        ("https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/config.yaml", "config.yaml")
     ]
 
-    for cmd in commands:
-        subprocess.run(cmd, shell=True, check=True)
+    # Function to download a single model file
+    def download_model(url, filename):
+        subprocess.run(f"wget {url} -P /checkpoints", shell=True, check=True)
+        print(f"Downloaded {filename}")
+
+    # Use ThreadPoolExecutor to download models in parallel
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        futures = [executor.submit(download_model, url, filename) for url, filename in model_urls]
+        concurrent.futures.wait(futures)
 
     print("Models downloaded successfully.")
     return True
