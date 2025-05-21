@@ -27,7 +27,7 @@ image = modal.Image.debian_slim().pip_install(
     "torchaudio"
 )
 
-# Add CUDA support
+# Add CUDA support and ffmpeg
 image = image.apt_install("ffmpeg")
 
 # Create a Modal volume to store model files
@@ -54,7 +54,7 @@ def download_models():
         print("Models already downloaded.")
         return
     
-    # Download models using huggingface-cli or wget
+    # Download models using wget
     commands = [
         "wget https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/bigvgan_discriminator.pth -P /checkpoints",
         "wget https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/bigvgan_generator.pth -P /checkpoints",
@@ -130,31 +130,6 @@ def run_inference(
         
         return output_data
 
-@app.function(
-    gpu="A10G",  # You can change this to "T4", "A100", etc. based on your needs
-    timeout=600,  # 10-minute timeout
-    volumes={"/checkpoints": volume}
-)
-def save_inference_result(
-    text: str,
-    voice_url: str,
-    output_path: str
-):
-    """Run inference and save the result to a file."""
-    import os
-    
-    # Ensure the output directory exists
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    
-    # Run inference
-    output_data = run_inference.remote(text, voice_url)
-    
-    # Save the output
-    with open(output_path, "wb") as f:
-        f.write(output_data)
-    
-    return f"Saved output to {output_path}"
-
 # Define a web endpoint for inference
 @app.function(
     gpu="A10G",  # You can change this to "T4", "A100", etc. based on your needs
@@ -175,6 +150,9 @@ async def inference_api(request):
     if not text or not voice_url:
         return {"error": "Missing required parameters: text and voice_url"}
     
+    # Ensure models are downloaded
+    download_models.remote()
+    
     # Run inference
     output_data = run_inference.remote(text, voice_url)
     
@@ -183,17 +161,9 @@ async def inference_api(request):
     
     return {"audio_base64": encoded_output}
 
-# Define a local entrypoint for running the script directly
-@app.local_entrypoint()
-def main(
-    text: str = "Hello, this is a test of Index-TTS running on Modal.",
-    voice_url: str = "https://example.com/voice_prompt.wav",
-    output_path: str = "output.wav"
- ):
-    """Local entrypoint for running inference."""
-    # First, ensure models are downloaded
-    download_models.remote()
-    
-    # Run inference and save the result
-    result = save_inference_result.remote(text, voice_url, output_path)
-    print(result)
+# Define a health check endpoint
+@app.function()
+@modal.web_endpoint(method="GET")
+async def health():
+    """Health check endpoint."""
+    return {"status": "ok", "service": "index-tts-inference"}
