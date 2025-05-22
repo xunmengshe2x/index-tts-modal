@@ -40,7 +40,7 @@ image = image.apt_install("ffmpeg", "wget", "git")
 volume = modal.Volume.from_name("index-tts-models", create_if_missing=True)
 
 # Create a Modal app
-app = modal.App("index-tts-inference", image=image)
+app = modal.App("index-tts-inference-1", image=image)
 
 @app.function(
     gpu="A10G",  # You can change this to "T4", "A100", etc. based on your needs
@@ -304,4 +304,4 @@ async def inference_api_with_file(request: Request):
 @modal.fastapi_endpoint(method="GET")
 async def health():
     """Health check endpoint."""
-    return {"status": "ok", "service": "index-tts-inference"}
+    return {"status": "ok", "service": "index-tts-inference-1"}
