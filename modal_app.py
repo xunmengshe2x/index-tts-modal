@@ -49,6 +49,10 @@ app = modal.App("index-tts-inference-1", image=image)
 )
 def download_models():
     """Download Index-TTS model files to the volume."""
+    import os
+    import subprocess
+    import concurrent.futures
+
     # Create checkpoints directory if it doesn't exist
     os.makedirs("/checkpoints", exist_ok=True)
 
@@ -78,8 +82,12 @@ def download_models():
         futures = [executor.submit(download_model, url, filename) for url, filename in model_urls]
         concurrent.futures.wait(futures)
 
+    # Debug: Print the contents of the /checkpoints directory
+    print(f"Contents of /checkpoints: {os.listdir('/checkpoints')}")
+
     print("Models downloaded successfully.")
     return True
+
 
 @app.function(
     gpu="A10G",  # You can change this to "T4", "A100", etc. based on your needs
@@ -238,9 +246,18 @@ async def inference_api_with_file(request: Request):
     download_models.remote()
     download_repository.remote()
 
-    # Create a file for the voice prompt
-    inputs_dir = "/checkpoints/inputs"
+    print('models downloaded')
+
+    # Use absolute paths
+    checkpoints_dir = "/checkpoints"
+    inputs_dir = os.path.join(checkpoints_dir, "inputs")
+    outputs_dir = os.path.join(checkpoints_dir, "outputs")
+
+    # Create directories if they don't exist
     os.makedirs(inputs_dir, exist_ok=True)
+    os.makedirs(outputs_dir, exist_ok=True)
+
+    # Create a file for the voice prompt
     voice_path = os.path.join(inputs_dir, "voice_prompt.wav")
 
     with open(voice_path, "wb") as temp_file:
@@ -253,28 +270,22 @@ async def inference_api_with_file(request: Request):
             raise FileNotFoundError(f"Voice prompt file does not exist: {voice_path}")
 
         # Set up output path
-        outputs_dir = "/checkpoints/outputs"
-        os.makedirs(outputs_dir, exist_ok=True)
         output_path = os.path.join(outputs_dir, "output.wav")
 
         # Add the cloned repository to the Python path
-        sys.path.append("/checkpoints/index-tts")
+        sys.path.append(os.path.join(checkpoints_dir, "index-tts"))
 
-        # Change the current working directory to /checkpoints
-        os.chdir("/checkpoints")
-
-        # Print the contents of the current directory
-        current_dir = os.getcwd()
-        print(f"Contents of current directory {current_dir}: {os.listdir(current_dir)}")
+        # Print the contents of the checkpoints directory
+        print(f"Contents of {checkpoints_dir}: {os.listdir(checkpoints_dir)}")
 
         # Dynamically import the module
-        module_path = "/checkpoints/index-tts/indextts/infer.py"
+        module_path = os.path.join(checkpoints_dir, "index-tts", "indextts", "infer.py")
         spec = importlib.util.spec_from_file_location("indextts.infer", module_path)
         indextts_infer = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(indextts_infer)
 
         # Initialize IndexTTS
-        tts = indextts_infer.IndexTTS(cfg_path="/checkpoints/config.yaml", model_dir="/checkpoints")
+        tts = indextts_infer.IndexTTS(cfg_path=os.path.join(checkpoints_dir, "config.yaml"), model_dir=checkpoints_dir)
 
         # Run inference
         tts.infer(audio_prompt=voice_path, text=text, output_path=output_path)
@@ -296,6 +307,7 @@ async def inference_api_with_file(request: Request):
         # Clean up the file
         if os.path.exists(voice_path):
             os.remove(voice_path)
+
 
 
 
