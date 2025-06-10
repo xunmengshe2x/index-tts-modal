@@ -235,8 +235,8 @@ async def inference_api_with_file(request: Request):
         return {"error": "Missing required parameters: text and voice_base64"}
 
     # Ensure models and repository are downloaded
-    download_models.remote()
-    download_repository.remote()
+    #download_models.remote()
+    #download_repository.remote()
 
     # Create a file for the voice prompt
     inputs_dir = "/checkpoints/inputs"
