@@ -315,8 +315,8 @@ async def inference_api_with_file(request: Request):
     data = await request.json()
     text = data.get("text")
     voice_base64 = data.get("voice_base64")
-    chunk_size = data.get("chunk_size", 100)  # Default changed to 20
-    max_text_tokens_per_sentence = data.get("max_text_tokens_per_sentence", 400)
+    chunk_size = data.get("chunk_size", 60)  # Default changed to 20
+    max_text_tokens_per_sentence = data.get("max_text_tokens_per_sentence", 300)
     sentences_bucket_max_size = data.get("sentences_bucket_max_size", 8)
 
     if not text or not voice_base64:
