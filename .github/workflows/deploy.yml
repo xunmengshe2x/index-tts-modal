@@ -23,6 +23,8 @@ jobs:
           pip install modal-client
           pip install torch torchaudio numpy
           pip install fastapi
+          # Add this line to ensure modal CLI is in path
+          export PATH="$HOME/.local/bin:$PATH"
 
       - name: Configure Modal
         run: |
@@ -38,6 +40,9 @@ jobs:
 
       - name: Deploy to Modal
         run: |
+          # Add the path to modal executable
+          export PATH="$HOME/.local/bin:$PATH"
+          which modal  # Debug: verify modal is found
           modal deploy modal_app.py
 
       - name: Verify deployment
