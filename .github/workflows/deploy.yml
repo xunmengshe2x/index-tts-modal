@@ -19,18 +19,19 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install modal-client
+          pip install modal fastapi[standard]  # Install Modal and FastAPI with standard dependencies
           pip install torch torchaudio numpy
-          pip install fastapi
-          # Add this line to ensure modal CLI is in path
-          export PATH="$HOME/.local/bin:$PATH"
 
       - name: Configure Modal
         run: |
+          # Create the .modal directory
           mkdir -p ~/.modal
+
+          # Create the token file with proper permissions
           touch ~/.modal.toml
           chmod 600 ~/.modal.toml
+
+          # Write the exact token configuration format
           cat > ~/.modal.toml << EOF
           [${{ secrets.MODAL_USERNAME }}]
           token_id = "${{ secrets.MODAL_TOKEN_ID }}"
@@ -40,12 +41,10 @@ jobs:
 
       - name: Deploy to Modal
         run: |
-          # Add the path to modal executable
-          export PATH="$HOME/.local/bin:$PATH"
-          which modal  # Debug: verify modal is found
+          # Deploy directly
           modal deploy modal_app.py
 
       - name: Verify deployment
         run: |
           echo "Deployment completed. The service is now available at:"
-          echo "https://${{ secrets.MODAL_USERNAME }}--index-tts-inference-fastapi-app.modal.run"
+          echo "https://${{ secrets.MODAL_USERNAME }}--index-tts-inference-inference-api.modal.run"
