@@ -123,7 +123,7 @@ def concatenate_audio_files(audio_files: List[bytes]) -> bytes:
     return output_buffer.getvalue()
 
 @app.function(
-    gpu="L4",
+    gpu="A100",
     timeout=600,
     volumes={"/checkpoints": volume}
 )
@@ -162,7 +162,7 @@ def download_models():
     return True
 
 @app.function(
-    gpu="L4",
+    gpu="A100",
     timeout=600,
     volumes={"/checkpoints": volume}
 )
@@ -197,7 +197,7 @@ def download_repository():
     return True
 
 @app.function(
-    gpu="L4",
+    gpu="A100",
     timeout=600,
     volumes={"/checkpoints": volume}
 )
@@ -261,7 +261,7 @@ def run_inference(
     return output_data
 
 @app.function(
-    gpu="L4",
+    gpu="A100",
     timeout=600,
     volumes={"/checkpoints": volume}
 )
@@ -291,7 +291,7 @@ async def inference_api(request: Request):
     return {"audio_base64": encoded_output}
 
 @app.function(
-    gpu="L4",
+    gpu="A100",
     timeout=600,
     volumes={"/checkpoints": volume},
 
