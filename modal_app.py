@@ -3,7 +3,7 @@ import os
 import modal
 from fastapi import Request, Response
 from fastapi.responses import StreamingResponse
-from starlette.responses import EventSourceResponse
+#from starlette.responses import EventSourceResponse
 # Additional imports needed for chunking
 import base64
 import io
@@ -315,90 +315,109 @@ async def inference_api_with_file(request: Request):
     # Create inputs directory if it doesn't exist
     inputs_dir = "/checkpoints/inputs"
     os.makedirs(inputs_dir, exist_ok=True)
-    voice_path = os.path.join(inputs_dir, "voice_prompt.wav")
+    voice_path = os.path.join(inputs_dir, "voice_prompt.wav")    # Ensure models and repository are downloaded
+    download_models.remote()
+    download_repository.remote()
 
-    with open(voice_path, "wb") as temp_file:
-        temp_file.write(base64.b64decode(voice_base64))
+    # Change the current working directory to /checkpoints
+    os.chdir("/checkpoints")
 
-    try:
-        # Debug: Check if the voice prompt file exists
-        if not os.path.exists(voice_path):
-            logger.error(f"Voice prompt file does not exist: {voice_path}")
-            raise FileNotFoundError(f"Voice prompt file does not exist: {voice_path}")
+    # Print the contents of the current directory
+    current_dir = os.getcwd()
+    print(f"Contents of current directory {current_dir}: {os.listdir(current_dir)}")
 
-        # Set up output paths
-        outputs_dir = "/checkpoints/outputs"
-        os.makedirs(outputs_dir, exist_ok=True)
+    # Dynamically import the module
+    module_path = "/checkpoints/index-tts/indextts/infer.py"
+    spec = importlib.util.spec_from_file_location("indextts.infer", module_path)
+    indextts_infer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(indextts_infer)
 
-        # Add the cloned repository to the Python path
-        sys.path.append("/checkpoints/index-tts")
+    # Initialize IndexTTS (This is no longer needed as infer_single_chunk will initialize it)
+    # tts = indextts_infer.IndexTTS(cfg_path="/checkpoints/config.yaml", model_dir="/checkpoints")
 
-        # Change the current working directory to /checkpoints
-        os.chdir("/checkpoints")
+    # Split text into chunks
+    chunks = split_into_chunks(text, max_chunk_size=chunk_size)
+    logger.info(f"Split text into {len(chunks)} chunks")
 
-        # Print the contents of the current directory
-        current_dir = os.getcwd()
-        print(f"Contents of current directory {current_dir}: {os.listdir(current_dir)}")
+    all_audio_data = []
+    futures = []
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        for idx, chunk in enumerate(chunks):
+            if not chunk or chunk.isspace():
+                logger.warning(f"Skipping empty chunk {idx}")
+                continue
+            chunk_output = f"chunk_{idx}.wav"
+            future = executor.submit(infer_single_chunk.remote, text_chunk=chunk, voice_path=voice_path, output_filename=chunk_output, max_text_tokens_per_sentence=max_text_tokens_per_sentence, sentences_bucket_max_size=sentences_bucket_max_size)
+            futures.append(future)
 
-        # Dynamically import the module
-        module_path = "/checkpoints/index-tts/indextts/infer.py"
-        spec = importlib.util.spec_from_file_location("indextts.infer", module_path)
-        indextts_infer = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(indextts_infer)
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                audio_data = future.result()
+                if audio_data:
+                    all_audio_data.append(audio_data)
+            except Exception as e:
+                logger.error(f"Error processing chunk in parallel: {str(e)}")
 
-        # Initialize IndexTTS
-        tts = indextts_infer.IndexTTS(cfg_path="/checkpoints/config.yaml", model_dir="/checkpoints")
+    if not all_audio_data:
+        return {"error": "No audio data generated"}
 
-        # Split text into chunks
-        chunks = split_into_chunks(text, max_chunk_size=chunk_size)
-        logger.info(f"Split text into {len(chunks)} chunks")
-
-        async def event_generator():
-            for idx, chunk in enumerate(chunks):
-                if not chunk or chunk.isspace():
-                    logger.warning(f"Skipping empty chunk {idx}")
-                    continue
-                    
-                chunk_output = f"chunk_{idx}.wav"
-                chunk_output_path = os.path.join(outputs_dir, chunk_output)
-                
-                try:
-                    # Clean the chunk text
-                    chunk = chunk.strip()
-                    if not chunk:
-                        logger.warning(f"Skipping empty chunk after cleaning {idx}")
-                        continue
-                        
-                    tts.infer_fast(audio_prompt=voice_path, text=chunk, output_path=chunk_output_path, max_text_tokens_per_sentence=max_text_tokens_per_sentence, sentences_bucket_max_size=sentences_bucket_max_size)
-                    
-                    if not os.path.exists(chunk_output_path):
-                        logger.error(f"Output file not created for chunk {idx}")
-                        continue
-                        
-                    with open(chunk_output_path, "rb") as f:
-                        audio_data = f.read()
-                    
-                    encoded_audio = base64.b64encode(audio_data).decode("utf-8")
-                    yield f"data: {encoded_audio}\n\n"
-                except Exception as e:
-                    logger.error(f"Error processing chunk {idx}: {str(e)}")
-                    yield f"event: error\ndata: {str(e)}\n\n"
-                finally:
-                    if os.path.exists(chunk_output_path):
-                        os.remove(chunk_output_path)
-            yield "event: complete\ndata: \n\n"
-
-        return EventSourceResponse(event_generator())
-    finally:
-        # Clean up the file
-        if os.path.exists(voice_path):
-            os.remove(voice_path)
-
-# Define a health check endpoint
+    concatenated_audio = concatenate_audio_files(all_audio_data)
+    encoded_output = base64.b64encode(concatenated_audio).decode("utf-8")
+    return {"audio_base64": encoded_output}
+#e a health check endpoint
 @app.function()
 @modal.fastapi_endpoint(method="GET")
 async def health():
     """Health check endpoint."""
     return {"status": "ok", "service": "index-tts-inference"}
+
+
+
+
+@app.function(
+    gpu="A10G",
+    timeout=600,
+    volumes={"/checkpoints": volume}
+)
+def infer_single_chunk(
+    text_chunk: str,
+    voice_path: str,
+    output_filename: str,
+    max_text_tokens_per_sentence: int,
+    sentences_bucket_max_size: int
+):
+    import os
+    import sys
+    import importlib.util
+    import logging
+
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
+
+    outputs_dir = "/checkpoints/outputs"
+    os.makedirs(outputs_dir, exist_ok=True)
+    chunk_output_path = os.path.join(outputs_dir, output_filename)
+
+    sys.path.append("/checkpoints/index-tts")
+    os.chdir("/checkpoints")
+
+    module_path = "/checkpoints/index-tts/indextts/infer.py"
+    spec = importlib.util.spec_from_file_location("indextts.infer", module_path)
+    indextts_infer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(indextts_infer)
+
+    tts = indextts_infer.IndexTTS(cfg_path="/checkpoints/config.yaml", model_dir="/checkpoints")
+
+    try:
+        tts.infer_fast(audio_prompt=voice_path, text=text_chunk, output_path=chunk_output_path, max_text_tokens_per_sentence=max_text_tokens_per_sentence, sentences_bucket_max_size=sentences_bucket_max_size)
+        with open(chunk_output_path, "rb") as f:
+            audio_data = f.read()
+        return audio_data
+    except Exception as e:
+        logger.error(f"Error processing chunk: {str(e)}")
+        return None
+    finally:
+        if os.path.exists(chunk_output_path):
+            os.remove(chunk_output_path)
 
 
