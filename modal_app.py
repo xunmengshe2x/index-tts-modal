@@ -19,6 +19,8 @@ import asyncio
 
 # Define a custom image with all dependencies
 image = modal.Image.debian_slim().pip_install(
+    "ninja-build",  # Add before deepspeed
+    #"deepspeed",    # Install after ninja-build
     "deepspeed",  # Add DeepSpeed
     #"accelerate==0.25.0",
     "accelerate==0.25.0",
@@ -50,7 +52,7 @@ image = modal.Image.debian_slim().pip_install(
 )
 
 # Add CUDA support, ffmpeg, wget, and git
-image = image.apt_install("ffmpeg", "wget", "git", "build-essential", "ninja-build")   
+image = image.apt_install("ffmpeg", "wget", "git", "build-essential", "ninja-build", "cuda-nvcc-11-8")   
 
 # Create a Modal volume to store model files
 volume = modal.Volume.from_name("index-tts-models", create_if_missing=True)
@@ -294,6 +296,10 @@ async def inference_api(request: Request):
     gpu="A10G",
     timeout=600,
     volumes={"/checkpoints": volume},
+    env={
+        "CUDA_HOME": "/usr/local/cuda",
+        "TORCH_CUDA_ARCH_LIST": "8.0"  # A10G architecture
+    }
 
 )
 @modal.fastapi_endpoint(method="POST")
