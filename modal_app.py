@@ -177,7 +177,7 @@ def download_repository():
 
     # Clone the repository
     subprocess.run(
-        "git clone https://github.com/index-tts/index-tts.git",
+        "git clone https://github.com/xunmengshe2x/index-tts-modal.git",
         shell=True,
         check=True,
         cwd="/checkpoints"
