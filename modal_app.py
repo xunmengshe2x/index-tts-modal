@@ -287,15 +287,13 @@ async def inference_api(request: Request):
 )
 @modal.fastapi_endpoint(method="POST")
 async def inference_api_with_file(request: Request):
-    """Web endpoint for Index-TTS inference with direct file upload and parallel processing."""
+    """Web endpoint for Index-TTS inference with direct file upload."""
     import base64
     import os
     import urllib.request
     import logging
     import sys
     import importlib.util
-    import asyncio
-    import torch
 
     # Set up logging
     logging.basicConfig(level=logging.INFO)
@@ -305,8 +303,9 @@ async def inference_api_with_file(request: Request):
     data = await request.json()
     text = data.get("text")
     voice_base64 = data.get("voice_base64")
-    chunk_size = data.get("chunk_size", 20)
-    max_parallel_chunks = data.get("max_parallel_chunks", 4)  # Control parallel processing
+    chunk_size = data.get("chunk_size", 20)  # Default changed to 20
+    max_text_tokens_per_sentence = data.get("max_text_tokens_per_sentence", 100)
+    sentences_bucket_max_size = data.get("sentences_bucket_max_size", 4)
 
     if not text or not voice_base64:
         return {"error": "Missing required parameters: text and voice_base64"}
@@ -320,6 +319,11 @@ async def inference_api_with_file(request: Request):
         temp_file.write(base64.b64decode(voice_base64))
 
     try:
+        # Debug: Check if the voice prompt file exists
+        if not os.path.exists(voice_path):
+            logger.error(f"Voice prompt file does not exist: {voice_path}")
+            raise FileNotFoundError(f"Voice prompt file does not exist: {voice_path}")
+
         # Set up output paths
         outputs_dir = "/checkpoints/outputs"
         os.makedirs(outputs_dir, exist_ok=True)
@@ -329,6 +333,10 @@ async def inference_api_with_file(request: Request):
 
         # Change the current working directory to /checkpoints
         os.chdir("/checkpoints")
+
+        # Print the contents of the current directory
+        current_dir = os.getcwd()
+        print(f"Contents of current directory {current_dir}: {os.listdir(current_dir)}")
 
         # Dynamically import the module
         module_path = "/checkpoints/index-tts/indextts/infer.py"
@@ -343,81 +351,54 @@ async def inference_api_with_file(request: Request):
         chunks = split_into_chunks(text, max_chunk_size=chunk_size)
         logger.info(f"Split text into {len(chunks)} chunks")
 
-        async def process_chunk(chunk_text, idx):
-            """Process a single chunk asynchronously"""
-            if not chunk_text or chunk_text.isspace():
-                logger.warning(f"Skipping empty chunk {idx}")
-                return None
+        # Process chunks sequentially
+        audio_chunks = []
 
+        for idx, chunk in enumerate(chunks):
+            if not chunk or chunk.isspace():
+                logger.warning(f"Skipping empty chunk {idx}")
+                continue
+                
             chunk_output = f"chunk_{idx}.wav"
             chunk_output_path = os.path.join(outputs_dir, chunk_output)
-
+            
             try:
                 # Clean the chunk text
-                chunk_text = chunk_text.strip()
-                if not chunk_text:
+                chunk = chunk.strip()
+                if not chunk:
                     logger.warning(f"Skipping empty chunk after cleaning {idx}")
-                    return None
-
-                # Run inference for this chunk using a thread pool
-                await asyncio.to_thread(
-                    tts.infer_fast,
-                    audio_prompt=voice_path,
-                    text=chunk_text,
-                    output_path=chunk_output_path
-                )
-
-                # Read the generated audio file
+                    continue
+                    
+                tts.infer_fast(audio_prompt=voice_path, text=chunk, output_path=chunk_output_path, max_text_tokens_per_sentence=max_text_tokens_per_sentence, sentences_bucket_max_size=sentences_bucket_max_size)
+                
+                if not os.path.exists(chunk_output_path):
+                    logger.error(f"Output file not created for chunk {idx}")
+                    continue
+                    
                 with open(chunk_output_path, "rb") as f:
                     audio_data = f.read()
-
-                # Clean up the temporary file
-                os.remove(chunk_output_path)
-
-                return audio_data
-
+                
+                audio_chunks.append((idx, audio_data))
             except Exception as e:
                 logger.error(f"Error processing chunk {idx}: {str(e)}")
-                return None
+            finally:
+                if os.path.exists(chunk_output_path):
+                    os.remove(chunk_output_path)
 
-        # Process chunks in parallel batches
-        all_audio_chunks = []
-        for i in range(0, len(chunks), max_parallel_chunks):
-            batch_chunks = chunks[i:i + max_parallel_chunks]
-            
-            # Create tasks for each chunk in the current batch
-            batch_tasks = [
-                process_chunk(chunk, idx + i)
-                for idx, chunk in enumerate(batch_chunks)
-            ]
+        # Check if we have any successful chunks
+        if not audio_chunks:
+            return {"error": "No audio chunks were successfully processed"}
 
-            # Process batch in parallel
-            batch_results = await asyncio.gather(*batch_tasks)
-            
-            # Filter out None results and add to final list
-            valid_results = [r for r in batch_results if r is not None]
-            all_audio_chunks.extend(valid_results)
+        # Sort chunks by index and concatenate
+        audio_chunks.sort(key=lambda x: x[0])
+        final_audio = concatenate_audio_files([chunk[1] for chunk in audio_chunks])
 
-            # Clear GPU memory after each batch
-            torch.cuda.empty_cache()
-
-        if not all_audio_chunks:
-            raise ValueError("No audio chunks were successfully generated")
-
-        # Concatenate all audio chunks
-        final_audio = concatenate_audio_files(all_audio_chunks)
-
-        # Encode the final audio as base64
+        # Encode the output as base64
         encoded_output = base64.b64encode(final_audio).decode("utf-8")
 
         return {"audio_base64": encoded_output}
-
-    except Exception as e:
-        logger.error(f"Error during inference: {str(e)}")
-        return {"error": str(e)}
-
     finally:
-        # Cleanup: remove voice prompt file
+        # Clean up the file
         if os.path.exists(voice_path):
             os.remove(voice_path)
 
