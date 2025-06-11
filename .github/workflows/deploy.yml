@@ -21,6 +21,7 @@ jobs:
         run: |
           pip install modal fastapi[standard]  # Install Modal and FastAPI with standard dependencies
           pip install torch torchaudio numpy
+          pip install starlette
 
       - name: Configure Modal
         run: |
