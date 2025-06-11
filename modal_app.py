@@ -294,13 +294,7 @@ async def inference_api(request: Request):
     gpu="T4",
     timeout=600,
     volumes={"/checkpoints": volume},
-    environment={
-    "DS_BUILD_CPU_ADAM": "1",
-    "DS_BUILD_FUSED_ADAM": "0",
-    "DS_BUILD_UTILS": "0",
-    "DS_BUILD_AIO": "0",
-    "DS_BUILD_OPS": "0"  # Disable building CUDA operations
-}
+
 )
 @modal.fastapi_endpoint(method="POST")
 async def inference_api_with_file(request: Request):
