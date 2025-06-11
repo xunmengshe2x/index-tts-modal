@@ -13,9 +13,9 @@ from typing import List
 import numpy as np
 import torch
 import torchaudio
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 import subprocess
+import asyncio
 
 # Define a custom image with all dependencies
 image = modal.Image.debian_slim().pip_install(
@@ -304,7 +304,7 @@ async def inference_api_with_file(request: Request):
     text = data.get("text")
     voice_base64 = data.get("voice_base64")
     chunk_size = data.get("chunk_size", 20)  # Default changed to 20
-    max_parallel_chunks = data.get("max_parallel_chunks", 8)  # Default changed to 8
+    # max_parallel_chunks = data.get("max_parallel_chunks", 8)  # Removed for sequential processing
 
     if not text or not voice_base64:
         return {"error": "Missing required parameters: text and voice_base64"}
@@ -350,59 +350,39 @@ async def inference_api_with_file(request: Request):
         chunks = split_into_chunks(text, max_chunk_size=chunk_size)
         logger.info(f"Split text into {len(chunks)} chunks")
 
-        # Process chunks in parallel
+        # Process chunks sequentially
         audio_chunks = []
 
-        def process_chunk(chunk: str, chunk_idx: int) -> bytes:
+        for idx, chunk in enumerate(chunks):
             if not chunk or chunk.isspace():
-                logger.warning(f"Skipping empty chunk {chunk_idx}")
-                return None
+                logger.warning(f"Skipping empty chunk {idx}")
+                continue
                 
-            chunk_output = f"chunk_{chunk_idx}.wav"
+            chunk_output = f"chunk_{idx}.wav"
             chunk_output_path = os.path.join(outputs_dir, chunk_output)
             
             try:
                 # Clean the chunk text
                 chunk = chunk.strip()
                 if not chunk:
-                    logger.warning(f"Skipping empty chunk after cleaning {chunk_idx}")
-                    return None
+                    logger.warning(f"Skipping empty chunk after cleaning {idx}")
+                    continue
                     
                 tts.infer(audio_prompt=voice_path, text=chunk, output_path=chunk_output_path)
                 
                 if not os.path.exists(chunk_output_path):
-                    logger.error(f"Output file not created for chunk {chunk_idx}")
-                    return None
+                    logger.error(f"Output file not created for chunk {idx}")
+                    continue
                     
                 with open(chunk_output_path, "rb") as f:
                     audio_data = f.read()
                 
-                return audio_data
+                audio_chunks.append((idx, audio_data))
             except Exception as e:
-                logger.error(f"Error processing chunk {chunk_idx}: {str(e)}")
-                return None
+                logger.error(f"Error processing chunk {idx}: {str(e)}")
             finally:
                 if os.path.exists(chunk_output_path):
                     os.remove(chunk_output_path)
-
-        # Process chunks in batches
-        for i in range(0, len(chunks), max_parallel_chunks):
-            batch_chunks = chunks[i:i + max_parallel_chunks]
-            
-            with ThreadPoolExecutor(max_workers=max_parallel_chunks) as executor:
-                future_to_chunk = {
-                    executor.submit(process_chunk, chunk, idx + i): idx + i
-                    for idx, chunk in enumerate(batch_chunks)
-                }
-                
-                for future in as_completed(future_to_chunk):
-                    chunk_idx = future_to_chunk[future]
-                    try:
-                        audio_data = future.result()
-                        if audio_data is not None:
-                            audio_chunks.append((chunk_idx, audio_data))
-                    except Exception as e:
-                        logger.error(f"Error processing chunk {chunk_idx}: {str(e)}")
 
         # Check if we have any successful chunks
         if not audio_chunks:
@@ -427,3 +407,5 @@ async def inference_api_with_file(request: Request):
 async def health():
     """Health check endpoint."""
     return {"status": "ok", "service": "index-tts-inference"}
+
+
