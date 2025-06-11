@@ -286,8 +286,8 @@ async def inference_api_with_file(request: Request):
     data = await request.json()
     text = data.get("text")
     voice_base64 = data.get("voice_base64")
-    chunk_size = data.get("chunk_size", 500)
-    max_parallel_chunks = data.get("max_parallel_chunks", 4)
+    chunk_size = data.get("chunk_size", 20)
+    max_parallel_chunks = data.get("max_parallel_chunks", 8)
 
     if not text or not voice_base64:
         return {"error": "Missing required parameters: text and voice_base64"}
