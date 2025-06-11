@@ -168,20 +168,28 @@ def download_repository():
     """Download the Index-TTS repository to the volume."""
     import subprocess
     import os
+    import shutil # This import is also needed inside the function for Modal's environment
 
-    # Create repository directory if it doesn't exist
+    # Define the target directory for the repository
     repo_dir = "/checkpoints/index-tts"
-    if os.path.exists(repo_dir):
-        print("Repository already downloaded.")
-        return
+    
+    # Ensure the /checkpoints directory exists
+    os.makedirs("/checkpoints", exist_ok=True)
 
-    # Clone the repository
+    # If the repository directory already exists, remove it to ensure a fresh clone
+    if os.path.exists(repo_dir):
+        print(f"Removing existing repository at {repo_dir}...")
+        shutil.rmtree(repo_dir)
+        print("Existing repository removed.")
+
+    print(f"Cloning repository into {repo_dir}...")
+    # Clone your repository into the specified directory name 'index-tts'
     subprocess.run(
-        "git clone https://github.com/xunmengshe2x/index-tts-modal.git",
+        f"git clone https://github.com/xunmengshe2x/index-tts-modal.git {repo_dir}",
         shell=True,
         check=True,
-        cwd="/checkpoints"
-    )
+        cwd="/checkpoints" # This ensures the clone command is run from /checkpoints
+     )
 
     print("Repository downloaded successfully.")
     return True
