@@ -176,11 +176,9 @@ def run_inference(
     text: str,
     voice_path: str,
     output_filename: str = "output.wav",
-    is_url: bool = True,
-    chunk_size: int = 500,
-    max_parallel_chunks: int = 4
+    is_url: bool = True
 ):
-    """Run Index-TTS inference with parallel processing for long texts."""
+    """Run Index-TTS inference with the given text and voice prompt."""
     import os
     import subprocess
     import urllib.request
@@ -200,6 +198,7 @@ def run_inference(
     if is_url:
         urllib.request.urlretrieve(voice_path, local_voice_path)
     else:
+        # If it's already a local path, just use it
         local_voice_path = voice_path
 
     # Debug: Check if the voice prompt file exists
@@ -207,65 +206,31 @@ def run_inference(
         logger.error(f"Voice prompt file does not exist: {local_voice_path}")
         raise FileNotFoundError(f"Voice prompt file does not exist: {local_voice_path}")
 
-    # Set up output paths
+    # Set up output path
     outputs_dir = "/checkpoints/outputs"
     os.makedirs(outputs_dir, exist_ok=True)
+    output_path = os.path.join(outputs_dir, output_filename)
 
     # Add the cloned repository to the Python path
     sys.path.append("/checkpoints/index-tts")
 
-    # Initialize TTS model
+    # Initialize IndexTTS
     from indextts.infer import IndexTTS
     tts = IndexTTS(cfg_path="/checkpoints/config.yaml", model_dir="/checkpoints")
 
-    # Split text into chunks
-    chunks = split_into_chunks(text, max_chunk_size=chunk_size)
-    logger.info(f"Split text into {len(chunks)} chunks")
+    # Run inference
+    tts.infer(audio_prompt=local_voice_path, text=text, output_path=output_path)
 
-    # Process chunks in parallel
-    audio_chunks = []
+    # Debug: Check if the output file exists
+    if not os.path.exists(output_path):
+        logger.error(f"Output file does not exist: {output_path}")
+        raise FileNotFoundError(f"Output file does not exist: {output_path}")
 
-    def process_chunk(chunk: str, chunk_idx: int) -> bytes:
-        chunk_output = f"chunk_{chunk_idx}.wav"
-        chunk_output_path = os.path.join(outputs_dir, chunk_output)
-        tts.infer(audio_prompt=local_voice_path, text=chunk, output_path=chunk_output_path)
-        
-        with open(chunk_output_path, "rb") as f:
-            audio_data = f.read()
-        
-        # Cleanup
-        os.remove(chunk_output_path)
-        return audio_data
+    # Read the output file
+    with open(output_path, "rb") as f:
+        output_data = f.read()
 
-    # Process chunks in batches
-    for i in range(0, len(chunks), max_parallel_chunks):
-        batch_chunks = chunks[i:i + max_parallel_chunks]
-        
-        with ThreadPoolExecutor(max_workers=max_parallel_chunks) as executor:
-            future_to_chunk = {
-                executor.submit(process_chunk, chunk, idx + i): idx + i
-                for idx, chunk in enumerate(batch_chunks)
-            }
-            
-            for future in as_completed(future_to_chunk):
-                chunk_idx = future_to_chunk[future]
-                try:
-                    audio_data = future.result()
-                    audio_chunks.append((chunk_idx, audio_data))
-                except Exception as e:
-                    logger.error(f"Error processing chunk {chunk_idx}: {str(e)}")
-                    raise
-
-    # Sort chunks by index and concatenate
-    audio_chunks.sort(key=lambda x: x[0])
-    final_audio = concatenate_audio_files([chunk[1] for chunk in audio_chunks])
-
-    # Save final output
-    output_path = os.path.join(outputs_dir, output_filename)
-    with open(output_path, "wb") as f:
-        f.write(final_audio)
-
-    return final_audio
+    return output_data
 
 # Define a web endpoint for inference with URL
 @app.function(
@@ -282,8 +247,6 @@ async def inference_api(request: Request):
     data = await request.json()
     text = data.get("text")
     voice_url = data.get("voice_url")
-    chunk_size = data.get("chunk_size", 500)
-    max_parallel_chunks = data.get("max_parallel_chunks", 4)
 
     if not text or not voice_url:
         return {"error": "Missing required parameters: text and voice_url"}
@@ -293,13 +256,7 @@ async def inference_api(request: Request):
     download_repository.remote()
 
     # Run inference
-    output_data = run_inference.remote(
-        text=text, 
-        voice_path=voice_url, 
-        is_url=True,
-        chunk_size=chunk_size,
-        max_parallel_chunks=max_parallel_chunks
-    )
+    output_data = run_inference.remote(text, voice_url, is_url=True)
 
     # Encode the output as base64
     encoded_output = base64.b64encode(output_data).decode("utf-8")
@@ -335,27 +292,91 @@ async def inference_api_with_file(request: Request):
     if not text or not voice_base64:
         return {"error": "Missing required parameters: text and voice_base64"}
 
-    try:
-        # Decode base64 audio and save to temporary file
-        voice_data = base64.b64decode(voice_base64)
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
-            temp_file.write(voice_data)
-            voice_path = temp_file.name
+    # Create inputs directory if it doesn't exist
+    inputs_dir = "/checkpoints/inputs"
+    os.makedirs(inputs_dir, exist_ok=True)
+    voice_path = os.path.join(inputs_dir, "voice_prompt.wav")
 
-        output_data = run_inference.remote(
-            text=text,
-            voice_path=voice_path,
-            is_url=False,
-            chunk_size=chunk_size,
-            max_parallel_chunks=max_parallel_chunks
-        )
+    with open(voice_path, "wb") as temp_file:
+        temp_file.write(base64.b64decode(voice_base64))
+
+    try:
+        # Debug: Check if the voice prompt file exists
+        if not os.path.exists(voice_path):
+            logger.error(f"Voice prompt file does not exist: {voice_path}")
+            raise FileNotFoundError(f"Voice prompt file does not exist: {voice_path}")
+
+        # Set up output paths
+        outputs_dir = "/checkpoints/outputs"
+        os.makedirs(outputs_dir, exist_ok=True)
+
+        # Add the cloned repository to the Python path
+        sys.path.append("/checkpoints/index-tts")
+
+        # Change the current working directory to /checkpoints
+        os.chdir("/checkpoints")
+
+        # Print the contents of the current directory
+        current_dir = os.getcwd()
+        print(f"Contents of current directory {current_dir}: {os.listdir(current_dir)}")
+
+        # Dynamically import the module
+        module_path = "/checkpoints/index-tts/indextts/infer.py"
+        spec = importlib.util.spec_from_file_location("indextts.infer", module_path)
+        indextts_infer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(indextts_infer)
+
+        # Initialize IndexTTS
+        tts = indextts_infer.IndexTTS(cfg_path="/checkpoints/config.yaml", model_dir="/checkpoints")
+
+        # Split text into chunks
+        chunks = split_into_chunks(text, max_chunk_size=chunk_size)
+        logger.info(f"Split text into {len(chunks)} chunks")
+
+        # Process chunks in parallel
+        audio_chunks = []
+
+        def process_chunk(chunk: str, chunk_idx: int) -> bytes:
+            chunk_output = f"chunk_{chunk_idx}.wav"
+            chunk_output_path = os.path.join(outputs_dir, chunk_output)
+            tts.infer(audio_prompt=voice_path, text=chunk, output_path=chunk_output_path)
+            
+            with open(chunk_output_path, "rb") as f:
+                audio_data = f.read()
+            
+            # Cleanup
+            os.remove(chunk_output_path)
+            return audio_data
+
+        # Process chunks in batches
+        for i in range(0, len(chunks), max_parallel_chunks):
+            batch_chunks = chunks[i:i + max_parallel_chunks]
+            
+            with ThreadPoolExecutor(max_workers=max_parallel_chunks) as executor:
+                future_to_chunk = {
+                    executor.submit(process_chunk, chunk, idx + i): idx + i
+                    for idx, chunk in enumerate(batch_chunks)
+                }
+                
+                for future in as_completed(future_to_chunk):
+                    chunk_idx = future_to_chunk[future]
+                    try:
+                        audio_data = future.result()
+                        audio_chunks.append((chunk_idx, audio_data))
+                    except Exception as e:
+                        logger.error(f"Error processing chunk {chunk_idx}: {str(e)}")
+                        raise
+
+        # Sort chunks by index and concatenate
+        audio_chunks.sort(key=lambda x: x[0])
+        final_audio = concatenate_audio_files([chunk[1] for chunk in audio_chunks])
 
         # Encode the output as base64
-        encoded_output = base64.b64encode(output_data).decode("utf-8")
+        encoded_output = base64.b64encode(final_audio).decode("utf-8")
 
         return {"audio_base64": encoded_output}
     finally:
-        # Clean up the temporary file
+        # Clean up the file
         if os.path.exists(voice_path):
             os.remove(voice_path)
 
