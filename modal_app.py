@@ -304,7 +304,8 @@ async def inference_api_with_file(request: Request):
     text = data.get("text")
     voice_base64 = data.get("voice_base64")
     chunk_size = data.get("chunk_size", 20)  # Default changed to 20
-    # max_parallel_chunks = data.get("max_parallel_chunks", 8)  # Removed for sequential processing
+    max_text_tokens_per_sentence = data.get("max_text_tokens_per_sentence", 100)
+    sentences_bucket_max_size = data.get("sentences_bucket_max_size", 4)
 
     if not text or not voice_base64:
         return {"error": "Missing required parameters: text and voice_base64"}
@@ -368,7 +369,7 @@ async def inference_api_with_file(request: Request):
                     logger.warning(f"Skipping empty chunk after cleaning {idx}")
                     continue
                     
-                tts.infer(audio_prompt=voice_path, text=chunk, output_path=chunk_output_path)
+                tts.infer_fast(audio_prompt=voice_path, text=chunk, output_path=chunk_output_path, max_text_tokens_per_sentence=max_text_tokens_per_sentence, sentences_bucket_max_size=sentences_bucket_max_size)
                 
                 if not os.path.exists(chunk_output_path):
                     logger.error(f"Output file not created for chunk {idx}")
