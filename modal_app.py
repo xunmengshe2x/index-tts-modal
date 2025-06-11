@@ -1,7 +1,9 @@
 import concurrent.futures
 import os
 import modal
-from fastapi import Request
+from fastapi import Request, Response
+from fastapi.responses import StreamingResponse
+from starlette.responses import EventSourceResponse
 # Additional imports needed for chunking
 import base64
 import io
@@ -351,46 +353,42 @@ async def inference_api_with_file(request: Request):
         chunks = split_into_chunks(text, max_chunk_size=chunk_size)
         logger.info(f"Split text into {len(chunks)} chunks")
 
-        # Process chunks in parallel
-        tasks = []
-        for idx, chunk in enumerate(chunks):
-            if not chunk or chunk.isspace():
-                logger.warning(f"Skipping empty chunk {idx}")
-                continue
-            chunk_output = f"chunk_{idx}.wav"
-            chunk_output_path = os.path.join(outputs_dir, chunk_output)
-            tasks.append(tts.infer_fast.remote.aio(audio_prompt=voice_path, text=chunk, output_path=chunk_output_path, max_text_tokens_per_sentence=max_text_tokens_per_sentence, sentences_bucket_max_size=sentences_bucket_max_size))
+        async def event_generator():
+            for idx, chunk in enumerate(chunks):
+                if not chunk or chunk.isspace():
+                    logger.warning(f"Skipping empty chunk {idx}")
+                    continue
+                    
+                chunk_output = f"chunk_{idx}.wav"
+                chunk_output_path = os.path.join(outputs_dir, chunk_output)
+                
+                try:
+                    # Clean the chunk text
+                    chunk = chunk.strip()
+                    if not chunk:
+                        logger.warning(f"Skipping empty chunk after cleaning {idx}")
+                        continue
+                        
+                    tts.infer_fast(audio_prompt=voice_path, text=chunk, output_path=chunk_output_path, max_text_tokens_per_sentence=max_text_tokens_per_sentence, sentences_bucket_max_size=sentences_bucket_max_size)
+                    
+                    if not os.path.exists(chunk_output_path):
+                        logger.error(f"Output file not created for chunk {idx}")
+                        continue
+                        
+                    with open(chunk_output_path, "rb") as f:
+                        audio_data = f.read()
+                    
+                    encoded_audio = base64.b64encode(audio_data).decode("utf-8")
+                    yield f"data: {encoded_audio}\n\n"
+                except Exception as e:
+                    logger.error(f"Error processing chunk {idx}: {str(e)}")
+                    yield f"event: error\ndata: {str(e)}\n\n"
+                finally:
+                    if os.path.exists(chunk_output_path):
+                        os.remove(chunk_output_path)
+            yield "event: complete\ndata: \n\n"
 
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        audio_chunks = []
-        for idx, result in enumerate(results):
-            if isinstance(result, Exception):
-                logger.error(f"Error processing chunk {idx}: {result}")
-                continue
-            chunk_output = f"chunk_{idx}.wav"
-            chunk_output_path = os.path.join(outputs_dir, chunk_output)
-            if not os.path.exists(chunk_output_path):
-                logger.error(f"Output file not created for chunk {idx}")
-                continue
-            with open(chunk_output_path, "rb") as f:
-                audio_data = f.read()
-            audio_chunks.append((idx, audio_data))
-            if os.path.exists(chunk_output_path):
-                os.remove(chunk_output_path)
-
-        # Check if we have any successful chunks
-        if not audio_chunks:
-            return {"error": "No audio chunks were successfully processed"}
-
-        # Sort chunks by index and concatenate
-        audio_chunks.sort(key=lambda x: x[0])
-        final_audio = concatenate_audio_files([chunk[1] for chunk in audio_chunks])
-
-        # Encode the output as base64
-        encoded_output = base64.b64encode(final_audio).decode("utf-8")
-
-        return {"audio_base64": encoded_output}
+        return EventSourceResponse(event_generator())
     finally:
         # Clean up the file
         if os.path.exists(voice_path):
