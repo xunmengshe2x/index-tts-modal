@@ -56,9 +56,15 @@ volume = modal.Volume.from_name("index-tts-models", create_if_missing=True)
 # Create a Modal app
 app = modal.App("index-tts-inference", image=image)
 
-def split_into_chunks(text: str, max_chunk_size: int = 500) -> List[str]:
+def split_into_chunks(text: str, max_chunk_size: int = 20) -> List[str]:
     """Split text into chunks based on sentences and maximum chunk size."""
-    sentences = re.split(r'(?<=[.!?])\s+', text)
+    # Clean input text
+    text = text.strip()
+    if not text:
+        return []
+        
+    # Split on sentence boundaries
+    sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
     chunks = []
     current_chunk = []
     current_length = 0
@@ -78,32 +84,45 @@ def split_into_chunks(text: str, max_chunk_size: int = 500) -> List[str]:
     if current_chunk:
         chunks.append(' '.join(current_chunk))
     
-    return chunks
+    return [chunk for chunk in chunks if chunk.strip()]
 
 def concatenate_audio_files(audio_files: List[bytes]) -> bytes:
     """Concatenate multiple audio files into a single audio file."""
+    if not audio_files:
+        raise ValueError("No audio files to concatenate")
+        
     waveforms = []
     sample_rate = None
     
     for audio_data in audio_files:
+        if not audio_data:
+            continue
+            
         audio_io = io.BytesIO(audio_data)
-        waveform, sr = torchaudio.load(audio_io)
-        
-        if sample_rate is None:
-            sample_rate = sr
-        elif sr != sample_rate:
-            raise ValueError("All audio files must have the same sample rate")
-        
-        waveforms.append(waveform)
+        try:
+            waveform, sr = torchaudio.load(audio_io)
+            
+            if sample_rate is None:
+                sample_rate = sr
+            elif sr != sample_rate:
+                raise ValueError("All audio files must have the same sample rate")
+            
+            waveforms.append(waveform)
+        except Exception as e:
+            logging.error(f"Error loading audio data: {str(e)}")
+            continue
     
+    if not waveforms:
+        raise ValueError("No valid waveforms to concatenate")
+        
     concatenated = torch.cat(waveforms, dim=1)
     output_buffer = io.BytesIO()
     torchaudio.save(output_buffer, concatenated, sample_rate, format="wav")
     return output_buffer.getvalue()
 
 @app.function(
-    gpu="A10G",  # You can change this to "T4", "A100", etc. based on your needs
-    timeout=600,  # 10-minute timeout
+    gpu="A10G",
+    timeout=600,
     volumes={"/checkpoints": volume}
 )
 def download_models():
@@ -141,8 +160,8 @@ def download_models():
     return True
 
 @app.function(
-    gpu="A10G",  # You can change this to "T4", "A100", etc. based on your needs
-    timeout=600,  # 10-minute timeout
+    gpu="A10G",
+    timeout=600,
     volumes={"/checkpoints": volume}
 )
 def download_repository():
@@ -168,8 +187,8 @@ def download_repository():
     return True
 
 @app.function(
-    gpu="A10G",  # You can change this to "T4", "A100", etc. based on your needs
-    timeout=600,  # 10-minute timeout
+    gpu="A10G",
+    timeout=600,
     volumes={"/checkpoints": volume}
 )
 def run_inference(
@@ -198,7 +217,6 @@ def run_inference(
     if is_url:
         urllib.request.urlretrieve(voice_path, local_voice_path)
     else:
-        # If it's already a local path, just use it
         local_voice_path = voice_path
 
     # Debug: Check if the voice prompt file exists
@@ -232,7 +250,6 @@ def run_inference(
 
     return output_data
 
-# Define a web endpoint for inference with URL
 @app.function(
     gpu="A10G",
     timeout=600,
@@ -286,8 +303,8 @@ async def inference_api_with_file(request: Request):
     data = await request.json()
     text = data.get("text")
     voice_base64 = data.get("voice_base64")
-    chunk_size = data.get("chunk_size", 20)
-    max_parallel_chunks = data.get("max_parallel_chunks", 8)
+    chunk_size = data.get("chunk_size", 20)  # Default changed to 20
+    max_parallel_chunks = data.get("max_parallel_chunks", 8)  # Default changed to 8
 
     if not text or not voice_base64:
         return {"error": "Missing required parameters: text and voice_base64"}
@@ -337,16 +354,36 @@ async def inference_api_with_file(request: Request):
         audio_chunks = []
 
         def process_chunk(chunk: str, chunk_idx: int) -> bytes:
+            if not chunk or chunk.isspace():
+                logger.warning(f"Skipping empty chunk {chunk_idx}")
+                return None
+                
             chunk_output = f"chunk_{chunk_idx}.wav"
             chunk_output_path = os.path.join(outputs_dir, chunk_output)
-            tts.infer(audio_prompt=voice_path, text=chunk, output_path=chunk_output_path)
             
-            with open(chunk_output_path, "rb") as f:
-                audio_data = f.read()
-            
-            # Cleanup
-            os.remove(chunk_output_path)
-            return audio_data
+            try:
+                # Clean the chunk text
+                chunk = chunk.strip()
+                if not chunk:
+                    logger.warning(f"Skipping empty chunk after cleaning {chunk_idx}")
+                    return None
+                    
+                tts.infer(audio_prompt=voice_path, text=chunk, output_path=chunk_output_path)
+                
+                if not os.path.exists(chunk_output_path):
+                    logger.error(f"Output file not created for chunk {chunk_idx}")
+                    return None
+                    
+                with open(chunk_output_path, "rb") as f:
+                    audio_data = f.read()
+                
+                return audio_data
+            except Exception as e:
+                logger.error(f"Error processing chunk {chunk_idx}: {str(e)}")
+                return None
+            finally:
+                if os.path.exists(chunk_output_path):
+                    os.remove(chunk_output_path)
 
         # Process chunks in batches
         for i in range(0, len(chunks), max_parallel_chunks):
@@ -362,10 +399,14 @@ async def inference_api_with_file(request: Request):
                     chunk_idx = future_to_chunk[future]
                     try:
                         audio_data = future.result()
-                        audio_chunks.append((chunk_idx, audio_data))
+                        if audio_data is not None:
+                            audio_chunks.append((chunk_idx, audio_data))
                     except Exception as e:
                         logger.error(f"Error processing chunk {chunk_idx}: {str(e)}")
-                        raise
+
+        # Check if we have any successful chunks
+        if not audio_chunks:
+            return {"error": "No audio chunks were successfully processed"}
 
         # Sort chunks by index and concatenate
         audio_chunks.sort(key=lambda x: x[0])
