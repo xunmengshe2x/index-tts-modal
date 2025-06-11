@@ -19,7 +19,7 @@ import asyncio
 
 # Define a custom image with all dependencies
 image = modal.Image.debian_slim().pip_install(
-    "deepspeed",  # Add DeepSpeed
+    #"deepspeed",  # Add DeepSpeed
     #"accelerate==0.25.0",
     "accelerate==0.25.0",
     "transformers==4.36.2",
