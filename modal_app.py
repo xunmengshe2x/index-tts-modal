@@ -1,6 +1,5 @@
 import base64
 import io
-import modal
 import os
 import re
 import sys
@@ -14,35 +13,34 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from fastapi import Request
 import logging
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+import modal
 
-stub = modal.Stub("index-tts-inference")
-volume = modal.NetworkFileSystem.persisted("index-tts-checkpoints")
+# Define the image with dependencies
+image = modal.Image.debian_slim(python_version="3.10").pip_install(
+    "torch==2.0.1",
+    "torchaudio==2.0.2",
+    "transformers",
+    "accelerate",
+    "tokenizers",
+    "matplotlib",
+    "numpy",
+    "librosa",
+    "pandas",
+    "requests",
+    "fastapi[all]",
+    "python-multipart",
+    "sentencepiece",
+    "wget",
+).pip_install("git+https://github.com/index-tts/index-tts.git")
 
-def download_checkpoints():
-    os.makedirs("/checkpoints", exist_ok=True)
-    
-    # Define checkpoint files and their URLs
-    checkpoints = {
-        "bigvgan_discriminator.pth": "https://huggingface.co/hf-internal-testing/index-tts/resolve/main/bigvgan_discriminator.pth",
-        "bigvgan_generator.pth": "https://huggingface.co/hf-internal-testing/index-tts/resolve/main/bigvgan_generator.pth",
-        "bpe.model": "https://huggingface.co/hf-internal-testing/index-tts/resolve/main/bpe.model",
-        "dvae.pth": "https://huggingface.co/hf-internal-testing/index-tts/resolve/main/dvae.pth",
-        "gpt.pth": "https://huggingface.co/hf-internal-testing/index-tts/resolve/main/gpt.pth",
-        "unigram_12000.vocab": "https://huggingface.co/hf-internal-testing/index-tts/resolve/main/unigram_12000.vocab",
-        "config.yaml": "https://huggingface.co/hf-internal-testing/index-tts/resolve/main/config.yaml",
-    }
-    
-    for filename, url in checkpoints.items():
-        filepath = f"/checkpoints/{filename}"
-        if not os.path.exists(filepath):
-            print(f"Downloading {filename}...")
-            urllib.request.urlretrieve(url, filepath)
+# Create volume for persistent storage
+volume = modal.Volume.from_name("index-tts-checkpoints", create_if_missing=True)
+
+# Create Modal app
+app = modal.App("index-tts-inference", image=image)
 
 def split_into_chunks(text: str, max_chunk_size: int = 500) -> List[str]:
     """Split text into chunks based on sentences and maximum chunk size."""
-    # Split into sentences first
     sentences = re.split(r'(?<=[.!?])\s+', text)
     chunks = []
     current_chunk = []
@@ -71,7 +69,6 @@ def concatenate_audio_files(audio_files: List[bytes]) -> bytes:
     sample_rate = None
     
     for audio_data in audio_files:
-        # Create a temporary file-like object
         audio_io = io.BytesIO(audio_data)
         waveform, sr = torchaudio.load(audio_io)
         
@@ -82,40 +79,14 @@ def concatenate_audio_files(audio_files: List[bytes]) -> bytes:
         
         waveforms.append(waveform)
     
-    # Concatenate along time dimension
     concatenated = torch.cat(waveforms, dim=1)
-    
-    # Convert back to bytes
     output_buffer = io.BytesIO()
     torchaudio.save(output_buffer, concatenated, sample_rate, format="wav")
     return output_buffer.getvalue()
 
-image = (
-    modal.Image.debian_slim(python_version="3.10")
-    .pip_install(
-        "torch==2.0.1",
-        "torchaudio==2.0.2",
-        "transformers",
-        "accelerate",
-        "tokenizers",
-        "matplotlib",
-        "numpy",
-        "librosa",
-        "pandas",
-        "requests",
-        "fastapi",
-        "python-multipart",
-        "sentencepiece",
-        "wget",
-    )
-    .pip_install("git+https://github.com/index-tts/index-tts.git")
-    .run_function(download_checkpoints)
-)
-
-@stub.function(
+@app.function(
     gpu="A10G",
     timeout=600,
-    image=image,
     volumes={"/checkpoints": volume}
 )
 def run_inference(
@@ -206,10 +177,9 @@ def run_inference(
     
     return final_audio
 
-@stub.function(
+@app.function(
     gpu="A10G",
     timeout=600,
-    image=image,
     volumes={"/checkpoints": volume}
 )
 @modal.asgi_app()
@@ -229,7 +199,7 @@ def fastapi_app():
             return {"error": "Missing required parameters"}
         
         try:
-            output_data = run_inference(
+            output_data = run_inference.remote(
                 text=text,
                 voice_path=voice_url,
                 chunk_size=chunk_size,
@@ -257,7 +227,7 @@ def fastapi_app():
                 temp_file.write(voice_data)
                 voice_path = temp_file.name
             
-            output_data = run_inference(
+            output_data = run_inference.remote(
                 text=text,
                 voice_path=voice_path,
                 is_url=False,
@@ -272,4 +242,11 @@ def fastapi_app():
         except Exception as e:
             return {"error": str(e)}
 
+    @app.get("/health")
+    async def health_check():
+        return {"status": "healthy"}
+
     return app
+
+if __name__ == "__main__":
+    modal.serve(fastapi_app)
