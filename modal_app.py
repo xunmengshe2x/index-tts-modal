@@ -318,6 +318,7 @@ async def inference_api_with_file(request: Request):
     if not text or not voice_base64:
         return {"error": "Missing required parameters: text and voice_base64"}
 
+    download_repository.remote()
     # Create inputs directory if it doesn't exist
     inputs_dir = "/checkpoints/inputs"
     os.makedirs(inputs_dir, exist_ok=True)
