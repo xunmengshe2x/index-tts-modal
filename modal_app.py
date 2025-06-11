@@ -295,12 +295,7 @@ async def inference_api(request: Request):
 @app.function(
     gpu="A10G",
     timeout=600,
-    volumes={"/checkpoints": volume},
-    env={
-        "CUDA_HOME": "/usr/local/cuda",
-        "TORCH_CUDA_ARCH_LIST": "8.0"  # A10G architecture
-    }
-
+    volumes={"/checkpoints": volume}
 )
 @modal.fastapi_endpoint(method="POST")
 async def inference_api_with_file(request: Request):
