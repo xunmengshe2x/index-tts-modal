@@ -19,9 +19,9 @@ import asyncio
 
 # Define a custom image with all dependencies
 image = modal.Image.debian_slim().pip_install(
-    "ninja-build",  # Add before deepspeed
+   # "ninja-build",  # Add before deepspeed
     #"deepspeed",    # Install after ninja-build
-    "deepspeed",  # Add DeepSpeed
+   # "deepspeed",  # Add DeepSpeed
     #"accelerate==0.25.0",
     "accelerate==0.25.0",
     "transformers==4.36.2",
@@ -52,7 +52,7 @@ image = modal.Image.debian_slim().pip_install(
 )
 
 # Add CUDA support, ffmpeg, wget, and git
-image = image.apt_install("ffmpeg", "wget", "git", "build-essential", "ninja-build", "cuda-nvcc-11-8")   
+image = image.apt_install("ffmpeg", "wget", "git")   
 
 # Create a Modal volume to store model files
 volume = modal.Volume.from_name("index-tts-models", create_if_missing=True)
