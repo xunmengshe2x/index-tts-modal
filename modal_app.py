@@ -297,6 +297,7 @@ async def inference_api(request: Request):
     timeout=900,
     volumes={"/checkpoints": volume}
 )
+@modal.concurrent(max_inputs=20)  # Allow up to 10 concurrent requests
 @modal.fastapi_endpoint(method="POST")
 async def inference_api_with_file(request: Request):
     """Web endpoint for Index-TTS inference with direct file upload."""
