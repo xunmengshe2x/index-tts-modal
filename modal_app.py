@@ -293,8 +293,8 @@ async def inference_api(request: Request):
     return {"audio_base64": encoded_output}
 
 @app.function(
-    gpu="A10G",
-    timeout=600,
+    gpu="h100",
+    timeout=900,
     volumes={"/checkpoints": volume}
 )
 @modal.fastapi_endpoint(method="POST")
