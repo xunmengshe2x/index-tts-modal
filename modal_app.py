@@ -313,26 +313,64 @@ async def inference_api_with_file(request: Request):
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
 
-    async def generate_chunks():
-        try:
-            # Add the cloned repository to the Python path
-            sys.path.append("/checkpoints/index-tts")
+    # Parse the request body
+    data = await request.json()
+    text = data.get("text")
+    voice_base64 = data.get("voice_base64")
+    chunk_size = data.get("chunk_size", 60)
+    max_text_tokens_per_sentence = data.get("max_text_tokens_per_sentence", 300)
+    sentences_bucket_max_size = data.get("sentences_bucket_max_size", 8)
 
-            # Dynamically import the module
-            module_path = "/checkpoints/index-tts/indextts/infer.py"
-            spec = importlib.util.spec_from_file_location("indextts.infer", module_path)
-            indextts_infer = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(indextts_infer)
+    if not text or not voice_base64:
+        return {"error": "Missing required parameters: text and voice_base64"}
 
-            # Initialize IndexTTS
-            tts = indextts_infer.IndexTTS(cfg_path="/checkpoints/config.yaml", model_dir="/checkpoints")
+    # Create inputs directory if it doesn't exist
+    inputs_dir = "/checkpoints/inputs"
+    outputs_dir = "/checkpoints/outputs"
+    os.makedirs(inputs_dir, exist_ok=True)
+    os.makedirs(outputs_dir, exist_ok=True)
+    voice_path = os.path.join(inputs_dir, "voice_prompt.wav")
 
-            # Process chunks sequentially
+    # Save voice file
+    with open(voice_path, "wb") as temp_file:
+        temp_file.write(base64.b64decode(voice_base64))
+
+    try:
+        # Debug: Check if the voice prompt file exists
+        if not os.path.exists(voice_path):
+            logger.error(f"Voice prompt file does not exist: {voice_path}")
+            raise FileNotFoundError(f"Voice prompt file does not exist: {voice_path}")
+
+        # Add the cloned repository to the Python path
+        sys.path.append("/checkpoints/index-tts")
+
+        # Change the current working directory to /checkpoints
+        os.chdir("/checkpoints")
+
+        # Print the contents of the current directory
+        current_dir = os.getcwd()
+        print(f"Contents of current directory {current_dir}: {os.listdir(current_dir)}")
+
+        # Dynamically import the module
+        module_path = "/checkpoints/index-tts/indextts/infer.py"
+        spec = importlib.util.spec_from_file_location("indextts.infer", module_path)
+        indextts_infer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(indextts_infer)
+
+        # Initialize IndexTTS
+        tts = indextts_infer.IndexTTS(cfg_path="/checkpoints/config.yaml", model_dir="/checkpoints")
+
+        # Split text into chunks
+        chunks = split_into_chunks(text, max_chunk_size=chunk_size)
+        logger.info(f"Split text into {len(chunks)} chunks")
+
+        async def generate_chunks():
+            audio_chunks = []
             for idx, chunk in enumerate(chunks):
                 if not chunk or chunk.isspace():
                     logger.warning(f"Skipping empty chunk {idx}")
                     continue
-                
+                    
                 chunk_output = f"chunk_{idx}.wav"
                 chunk_output_path = os.path.join(outputs_dir, chunk_output)
                 
@@ -366,7 +404,6 @@ async def inference_api_with_file(request: Request):
                         "audio_base64": base64.b64encode(audio_data).decode("utf-8")
                     }
                     
-                    # Yield each chunk as it's processed
                     yield json.dumps(chunk_response) + "\n"
                     
                 except Exception as e:
@@ -375,47 +412,15 @@ async def inference_api_with_file(request: Request):
                     if os.path.exists(chunk_output_path):
                         os.remove(chunk_output_path)
 
-        except Exception as e:
-            logger.error(f"Error in generate_chunks: {str(e)}")
-            yield json.dumps({"error": str(e)}) + "\n"
-
-    # Parse the request body
-    data = await request.json()
-    text = data.get("text")
-    voice_base64 = data.get("voice_base64")
-    chunk_size = data.get("chunk_size", 60)
-    max_text_tokens_per_sentence = data.get("max_text_tokens_per_sentence", 300)
-    sentences_bucket_max_size = data.get("sentences_bucket_max_size", 8)
-
-    if not text or not voice_base64:
-        return {"error": "Missing required parameters: text and voice_base64"}
-
-    # Create inputs directory if it doesn't exist
-    inputs_dir = "/checkpoints/inputs"
-    outputs_dir = "/checkpoints/outputs"
-    os.makedirs(inputs_dir, exist_ok=True)
-    os.makedirs(outputs_dir, exist_ok=True)
-    voice_path = os.path.join(inputs_dir, "voice_prompt.wav")
-
-    # Save voice file
-    with open(voice_path, "wb") as temp_file:
-        temp_file.write(base64.b64decode(voice_base64))
-
-    # Split text into chunks
-    chunks = split_into_chunks(text, max_chunk_size=chunk_size)
-    logger.info(f"Split text into {len(chunks)} chunks")
-
-    try:
-        # Return streaming response
         return StreamingResponse(
             generate_chunks(),
             media_type="application/x-ndjson"
         )
+
     finally:
         # Clean up the voice file
         if os.path.exists(voice_path):
             os.remove(voice_path)
-
 # Define a health check endpoint
 @app.function()
 @modal.fastapi_endpoint(method="GET")
