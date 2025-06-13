@@ -300,12 +300,14 @@ async def inference_api(request: Request):
 @modal.fastapi_endpoint(method="POST")
 async def inference_api_with_file(request: Request):
     """Web endpoint for Index-TTS inference with direct file upload."""
+    from fastapi.responses import StreamingResponse
     import base64
     import os
     import urllib.request
     import logging
     import sys
     import importlib.util
+    import json
 
     # Set up logging
     logging.basicConfig(level=logging.INFO)
