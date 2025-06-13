@@ -299,15 +299,13 @@ async def inference_api(request: Request):
 )
 @modal.fastapi_endpoint(method="POST")
 async def inference_api_with_file(request: Request):
-    """Web endpoint for Index-TTS inference with direct file upload and streaming response."""
-    from fastapi.responses import StreamingResponse
+    """Web endpoint for Index-TTS inference with direct file upload."""
     import base64
     import os
     import urllib.request
     import logging
     import sys
     import importlib.util
-    import json
 
     # Set up logging
     logging.basicConfig(level=logging.INFO)
@@ -317,21 +315,19 @@ async def inference_api_with_file(request: Request):
     data = await request.json()
     text = data.get("text")
     voice_base64 = data.get("voice_base64")
-    chunk_size = data.get("chunk_size", 60)
+    chunk_size = data.get("chunk_size", 60)  # Default changed to 20
     max_text_tokens_per_sentence = data.get("max_text_tokens_per_sentence", 300)
     sentences_bucket_max_size = data.get("sentences_bucket_max_size", 8)
 
     if not text or not voice_base64:
         return {"error": "Missing required parameters: text and voice_base64"}
 
+    #download_repository.remote()
     # Create inputs directory if it doesn't exist
     inputs_dir = "/checkpoints/inputs"
-    outputs_dir = "/checkpoints/outputs"
     os.makedirs(inputs_dir, exist_ok=True)
-    os.makedirs(outputs_dir, exist_ok=True)
     voice_path = os.path.join(inputs_dir, "voice_prompt.wav")
 
-    # Save voice file
     with open(voice_path, "wb") as temp_file:
         temp_file.write(base64.b64decode(voice_base64))
 
@@ -340,6 +336,10 @@ async def inference_api_with_file(request: Request):
         if not os.path.exists(voice_path):
             logger.error(f"Voice prompt file does not exist: {voice_path}")
             raise FileNotFoundError(f"Voice prompt file does not exist: {voice_path}")
+
+        # Set up output paths
+        outputs_dir = "/checkpoints/outputs"
+        os.makedirs(outputs_dir, exist_ok=True)
 
         # Add the cloned repository to the Python path
         sys.path.append("/checkpoints/index-tts")
@@ -364,63 +364,57 @@ async def inference_api_with_file(request: Request):
         chunks = split_into_chunks(text, max_chunk_size=chunk_size)
         logger.info(f"Split text into {len(chunks)} chunks")
 
-        async def generate_chunks():
-            audio_chunks = []
-            for idx, chunk in enumerate(chunks):
-                if not chunk or chunk.isspace():
-                    logger.warning(f"Skipping empty chunk {idx}")
+        # Process chunks sequentially
+        audio_chunks = []
+
+        for idx, chunk in enumerate(chunks):
+            if not chunk or chunk.isspace():
+                logger.warning(f"Skipping empty chunk {idx}")
+                continue
+                
+            chunk_output = f"chunk_{idx}.wav"
+            chunk_output_path = os.path.join(outputs_dir, chunk_output)
+            
+            try:
+                # Clean the chunk text
+                chunk = chunk.strip()
+                if not chunk:
+                    logger.warning(f"Skipping empty chunk after cleaning {idx}")
                     continue
                     
-                chunk_output = f"chunk_{idx}.wav"
-                chunk_output_path = os.path.join(outputs_dir, chunk_output)
+                tts.infer_fast(audio_prompt=voice_path, text=chunk, output_path=chunk_output_path, max_text_tokens_per_sentence=max_text_tokens_per_sentence, sentences_bucket_max_size=sentences_bucket_max_size)
                 
-                try:
-                    # Clean the chunk text
-                    chunk = chunk.strip()
-                    if not chunk:
-                        logger.warning(f"Skipping empty chunk after cleaning {idx}")
-                        continue
-                        
-                    tts.infer_fast(
-                        audio_prompt=voice_path,
-                        text=chunk,
-                        output_path=chunk_output_path,
-                        max_text_tokens_per_sentence=max_text_tokens_per_sentence,
-                        sentences_bucket_max_size=sentences_bucket_max_size
-                    )
+                if not os.path.exists(chunk_output_path):
+                    logger.error(f"Output file not created for chunk {idx}")
+                    continue
                     
-                    if not os.path.exists(chunk_output_path):
-                        logger.error(f"Output file not created for chunk {idx}")
-                        continue
-                        
-                    with open(chunk_output_path, "rb") as f:
-                        audio_data = f.read()
-                    
-                    # Create chunk response
-                    chunk_response = {
-                        "chunk_index": idx,
-                        "total_chunks": len(chunks),
-                        "text": chunk,
-                        "audio_base64": base64.b64encode(audio_data).decode("utf-8")
-                    }
-                    
-                    yield json.dumps(chunk_response) + "\n"
-                    
-                except Exception as e:
-                    logger.error(f"Error processing chunk {idx}: {str(e)}")
-                finally:
-                    if os.path.exists(chunk_output_path):
-                        os.remove(chunk_output_path)
+                with open(chunk_output_path, "rb") as f:
+                    audio_data = f.read()
+                
+                audio_chunks.append((idx, audio_data))
+            except Exception as e:
+                logger.error(f"Error processing chunk {idx}: {str(e)}")
+            finally:
+                if os.path.exists(chunk_output_path):
+                    os.remove(chunk_output_path)
 
-        return StreamingResponse(
-            generate_chunks(),
-            media_type="application/x-ndjson"
-        )
+        # Check if we have any successful chunks
+        if not audio_chunks:
+            return {"error": "No audio chunks were successfully processed"}
 
+        # Sort chunks by index and concatenate
+        audio_chunks.sort(key=lambda x: x[0])
+        final_audio = concatenate_audio_files([chunk[1] for chunk in audio_chunks])
+
+        # Encode the output as base64
+        encoded_output = base64.b64encode(final_audio).decode("utf-8")
+
+        return {"audio_base64": encoded_output}
     finally:
-        # Clean up the voice file
+        # Clean up the file
         if os.path.exists(voice_path):
             os.remove(voice_path)
+
 # Define a health check endpoint
 @app.function()
 @modal.fastapi_endpoint(method="GET")
