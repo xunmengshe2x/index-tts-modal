@@ -414,15 +414,15 @@ async def inference_api_with_file(request: Request):
                          if os.path.exists(chunk_output_path):
                              os.remove(chunk_output_path)
          
-          try:
-              return StreamingResponse(
-                  generate_chunks(),
-                  media_type="application/x-ndjson"
-              )
-          finally:
-              # Clean up the file
-              if os.path.exists(voice_path):
-                  os.remove(voice_path)
+             try:
+                 return StreamingResponse(
+                     generate_chunks(),
+                     media_type="application/x-ndjson"
+                 )
+             finally:
+                 # Clean up the file
+                 if os.path.exists(voice_path):
+                     os.remove(voice_path)
 
 
 
