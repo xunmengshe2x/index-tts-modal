@@ -370,154 +370,169 @@ async def inference_api_with_file(request: Request):
     os.makedirs(inputs_dir, exist_ok=True)
     voice_path = os.path.join(inputs_dir, "voice_prompt.wav")
 
+    # Write the voice file ONCE before processing chunks
     with open(voice_path, "wb") as temp_file:
         temp_file.write(base64.b64decode(voice_base64))
 
-    try:
-        # Debug: Check if the voice prompt file exists
-        if not os.path.exists(voice_path):
-            logger.error(f"Voice prompt file does not exist: {voice_path}")
-            raise FileNotFoundError(f"Voice prompt file does not exist: {voice_path}")
+    # Verify voice file was created successfully
+    if not os.path.exists(voice_path):
+        logger.error(f"Failed to create voice prompt file: {voice_path}")
+        return {"error": "Failed to create voice prompt file"}
 
-        # Set up output paths
-        outputs_dir = "/checkpoints/outputs"
-        os.makedirs(outputs_dir, exist_ok=True)
+    # Debug: Check if the voice prompt file exists and log its size
+    file_size = os.path.getsize(voice_path)
+    logger.info(f"Voice prompt file created successfully: {voice_path} (size: {file_size} bytes)")
 
-        # Add the cloned repository to the Python path
-        sys.path.append("/checkpoints/index-tts")
+    # Set up output paths
+    outputs_dir = "/checkpoints/outputs"
+    os.makedirs(outputs_dir, exist_ok=True)
 
-        # Change the current working directory to /checkpoints
-        os.chdir("/checkpoints")
+    # Add the cloned repository to the Python path
+    sys.path.append("/checkpoints/index-tts")
 
-        # Print the contents of the current directory
-        current_dir = os.getcwd()
-        print(f"Contents of current directory {current_dir}: {os.listdir(current_dir)}")
+    # Change the current working directory to /checkpoints
+    os.chdir("/checkpoints")
 
-        # Dynamically import the module
-        module_path = "/checkpoints/index-tts/indextts/infer.py"
-        spec = importlib.util.spec_from_file_location("indextts.infer", module_path)
-        indextts_infer = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(indextts_infer)
+    # Print the contents of the current directory
+    current_dir = os.getcwd()
+    print(f"Contents of current directory {current_dir}: {os.listdir(current_dir)}")
 
-        # Initialize IndexTTS
-        tts = indextts_infer.IndexTTS(cfg_path="/checkpoints/config.yaml", model_dir="/checkpoints")
+    # Dynamically import the module
+    module_path = "/checkpoints/index-tts/indextts/infer.py"
+    spec = importlib.util.spec_from_file_location("indextts.infer", module_path)
+    indextts_infer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(indextts_infer)
 
-        # Split text into chunks
-        chunks = split_into_chunks(text, max_chunk_size=chunk_size)
-        logger.info(f"Split text into {len(chunks)} chunks")
+    # Initialize IndexTTS
+    tts = indextts_infer.IndexTTS(cfg_path="/checkpoints/config.yaml", model_dir="/checkpoints")
 
-        async def generate_chunks():
-            """Generator that yields audio chunks as they're produced."""
-            try:
-                # Send initial metadata
-                metadata = {
-                    "type": "metadata",
-                    "total_chunks": len(chunks),
-                    "chunk_size": chunk_size
-                }
-                yield json.dumps(metadata) + "\n"
-                
-                for idx, chunk in enumerate(chunks):
-                    if not chunk or chunk.isspace():
-                        logger.warning(f"Skipping empty chunk {idx}")
-                        continue
-                        
-                    chunk_output = f"chunk_{idx}.wav"
-                    chunk_output_path = os.path.join(outputs_dir, chunk_output)
+    # Split text into chunks
+    chunks = split_into_chunks(text, max_chunk_size=chunk_size)
+    logger.info(f"Split text into {len(chunks)} chunks")
+
+    async def generate_chunks():
+        """Generator that yields audio chunks as they're produced."""
+        try:
+            # Send initial metadata
+            metadata = {
+                "type": "metadata",
+                "total_chunks": len(chunks),
+                "chunk_size": chunk_size
+            }
+            yield json.dumps(metadata) + "\n"
+            
+            for idx, chunk in enumerate(chunks):
+                if not chunk or chunk.isspace():
+                    logger.warning(f"Skipping empty chunk {idx}")
+                    continue
                     
-                    try:
-                        # Clean the chunk text
-                        chunk = chunk.strip()
-                        if not chunk:
-                            logger.warning(f"Skipping empty chunk after cleaning {idx}")
-                            continue
-                            
-                        logger.info(f"Processing chunk {idx}/{len(chunks)}: {chunk[:50]}...")
-                        
-                        # Generate audio for this chunk
-                        tts.infer_fast(
-                            audio_prompt=voice_path,
-                            text=chunk,
-                            output_path=chunk_output_path,
-                            max_text_tokens_per_sentence=max_text_tokens_per_sentence,
-                            sentences_bucket_max_size=sentences_bucket_max_size
-                        )
-                        
-                        if not os.path.exists(chunk_output_path):
-                            error_msg = f"Output file not created for chunk {idx}"
-                            logger.error(error_msg)
-                            yield json.dumps({
-                                "type": "error",
-                                "chunk_index": idx,
-                                "error": error_msg
-                            }) + "\n"
-                            continue
-                            
-                        # Read the audio data
-                        with open(chunk_output_path, "rb") as f:
-                            audio_data = f.read()
-                        
-                        # Stream each chunk as it's generated
-                        chunk_response = {
-                            "type": "chunk",
-                            "chunk_index": idx,
-                            "total_chunks": len(chunks),
-                            "text": chunk,
-                            "audio_base64": base64.b64encode(audio_data).decode("utf-8"),
-                            "is_final": idx == len(chunks) - 1
-                        }
-                        
-                        logger.info(f"Streaming chunk {idx} ({len(audio_data)} bytes)")
-                        yield json.dumps(chunk_response) + "\n"
-                        
-                        # Clean up chunk file immediately after streaming
-                        if os.path.exists(chunk_output_path):
-                            os.remove(chunk_output_path)
-                        
-                        # Small delay to ensure proper streaming
-                        await asyncio.sleep(0.1)
-                        
-                    except Exception as e:
-                        error_msg = f"Error processing chunk {idx}: {str(e)}"
+                chunk_output = f"chunk_{idx}.wav"
+                chunk_output_path = os.path.join(outputs_dir, chunk_output)
+                
+                try:
+                    # Clean the chunk text
+                    chunk = chunk.strip()
+                    if not chunk:
+                        logger.warning(f"Skipping empty chunk after cleaning {idx}")
+                        continue
+                    
+                    # Verify voice file still exists before processing each chunk
+                    if not os.path.exists(voice_path):
+                        error_msg = f"Voice prompt file missing before processing chunk {idx}: {voice_path}"
                         logger.error(error_msg)
                         yield json.dumps({
                             "type": "error",
                             "chunk_index": idx,
                             "error": error_msg
                         }) + "\n"
+                        break
                         
-                        # Clean up on error
-                        if os.path.exists(chunk_output_path):
-                            os.remove(chunk_output_path)
+                    logger.info(f"Processing chunk {idx}/{len(chunks)}: {chunk[:50]}...")
+                    
+                    # Generate audio for this chunk
+                    tts.infer_fast(
+                        audio_prompt=voice_path,
+                        text=chunk,
+                        output_path=chunk_output_path,
+                        max_text_tokens_per_sentence=max_text_tokens_per_sentence,
+                        sentences_bucket_max_size=sentences_bucket_max_size
+                    )
+                    
+                    if not os.path.exists(chunk_output_path):
+                        error_msg = f"Output file not created for chunk {idx}"
+                        logger.error(error_msg)
+                        yield json.dumps({
+                            "type": "error",
+                            "chunk_index": idx,
+                            "error": error_msg
+                        }) + "\n"
+                        continue
+                        
+                    # Read the audio data
+                    with open(chunk_output_path, "rb") as f:
+                        audio_data = f.read()
+                    
+                    # Stream each chunk as it's generated
+                    chunk_response = {
+                        "type": "chunk",
+                        "chunk_index": idx,
+                        "total_chunks": len(chunks),
+                        "text": chunk,
+                        "audio_base64": base64.b64encode(audio_data).decode("utf-8"),
+                        "is_final": idx == len(chunks) - 1
+                    }
+                    
+                    logger.info(f"Streaming chunk {idx} ({len(audio_data)} bytes)")
+                    yield json.dumps(chunk_response) + "\n"
+                    
+                    # Clean up chunk file immediately after streaming
+                    if os.path.exists(chunk_output_path):
+                        os.remove(chunk_output_path)
+                    
+                    # Small delay to ensure proper streaming
+                    await asyncio.sleep(0.1)
+                    
+                except Exception as e:
+                    error_msg = f"Error processing chunk {idx}: {str(e)}"
+                    logger.error(error_msg)
+                    yield json.dumps({
+                        "type": "error",
+                        "chunk_index": idx,
+                        "error": error_msg
+                    }) + "\n"
+                    
+                    # Clean up on error
+                    if os.path.exists(chunk_output_path):
+                        os.remove(chunk_output_path)
 
-                # Send completion signal
-                completion = {
-                    "type": "complete",
-                    "total_chunks_processed": len([c for c in chunks if c.strip()])
-                }
-                yield json.dumps(completion) + "\n"
-                
-            except Exception as e:
-                logger.error(f"Stream generation error: {str(e)}")
-                yield json.dumps({
-                    "type": "error", 
-                    "error": f"Stream generation failed: {str(e)}"
-                }) + "\n"
-
-        return StreamingResponse(
-            generate_chunks(),
-            media_type="application/x-ndjson",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no"  # Disable nginx buffering for true streaming
+            # Send completion signal
+            completion = {
+                "type": "complete",
+                "total_chunks_processed": len([c for c in chunks if c.strip()])
             }
-        )
+            yield json.dumps(completion) + "\n"
+            
+        except Exception as e:
+            logger.error(f"Stream generation error: {str(e)}")
+            yield json.dumps({
+                "type": "error", 
+                "error": f"Stream generation failed: {str(e)}"
+            }) + "\n"
+        finally:
+            # Clean up the voice file ONLY after all chunks are processed
+            if os.path.exists(voice_path):
+                logger.info(f"Cleaning up voice prompt file: {voice_path}")
+                os.remove(voice_path)
 
-    finally:
-        # Clean up the voice file
-        if os.path.exists(voice_path):
-            os.remove(voice_path)
+    return StreamingResponse(
+        generate_chunks(),
+        media_type="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"  # Disable nginx buffering for true streaming
+        }
+    )
 
 
 # Define a health check endpoint
