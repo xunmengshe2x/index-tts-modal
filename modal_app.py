@@ -261,7 +261,7 @@ async def inference_api(request: Request):
     gpu="A10G",
     timeout=900,
     volumes={"/checkpoints": volume},
-    keep_warm=1  # Keep one instance warm for faster response
+    #keep_warm=1  # Keep one instance warm for faster response
 )
 @modal.fastapi_endpoint(method="POST")
 async def inference_api_with_file(request: Request):
