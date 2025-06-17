@@ -332,7 +332,11 @@ class IndexTTSModel:
 # Create a persistent model instance
 model_instance = IndexTTSModel()
 
-@app.function()
+@app.function(
+    gpu="A10G",
+    timeout=900,
+    volumes={"/checkpoints": volume}
+)
 @modal.fastapi_endpoint(method="POST")
 async def inference_api_optimized(request: Request):
     """Optimized streaming endpoint using persistent model."""
