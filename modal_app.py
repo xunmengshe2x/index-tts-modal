@@ -120,80 +120,6 @@ def concatenate_audio_files(audio_files: List[bytes]) -> bytes:
     torchaudio.save(output_buffer, concatenated, sample_rate, format="wav")
     return output_buffer.getvalue()
 
-@app.function(
-    gpu="A10G",
-    timeout=600,
-    volumes={"/checkpoints": volume}
-)
-def download_models():
-    """Download Index-TTS model files to the volume."""
-    # Create checkpoints directory if it doesn't exist
-    os.makedirs("/checkpoints", exist_ok=True)
-
-    # Check if models are already downloaded
-    if os.path.exists("/checkpoints/gpt.pth"):
-        print("Models already downloaded.")
-        return
-
-    # List of model URLs and their corresponding filenames
-    model_urls = [
-        ("https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/bigvgan_discriminator.pth", "bigvgan_discriminator.pth"),
-        ("https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/bigvgan_generator.pth", "bigvgan_generator.pth"),
-        ("https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/bpe.model", "bpe.model"),
-        ("https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/dvae.pth", "dvae.pth"),
-        ("https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/gpt.pth", "gpt.pth"),
-        ("https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/unigram_12000.vocab", "unigram_12000.vocab"),
-        ("https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/config.yaml", "config.yaml")
-    ]
-
-    # Function to download a single model file
-    def download_model(url, filename):
-        subprocess.run(f"wget {url} -P /checkpoints", shell=True, check=True)
-        print(f"Downloaded {filename}")
-
-    # Use ThreadPoolExecutor to download models in parallel
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        futures = [executor.submit(download_model, url, filename) for url, filename in model_urls]
-        concurrent.futures.wait(futures)
-
-    print("Models downloaded successfully.")
-    return True
-
-@app.function(
-    gpu="A10G",
-    timeout=600,
-    volumes={"/checkpoints": volume}
-)
-def download_repository():
-    """Download the Index-TTS repository to the volume."""
-    import subprocess
-    import os
-    import shutil
-
-    # Define the target directory for the repository
-    repo_dir = "/checkpoints/index-tts"
-    
-    # Ensure the /checkpoints directory exists
-    os.makedirs("/checkpoints", exist_ok=True)
-
-    # If the repository directory already exists, remove it to ensure a fresh clone
-    if os.path.exists(repo_dir):
-        print(f"Removing existing repository at {repo_dir}...")
-        shutil.rmtree(repo_dir)
-        print("Existing repository removed.")
-
-    print(f"Cloning repository into {repo_dir}...")
-    # Clone your repository into the specified directory name 'index-tts'
-    subprocess.run(
-        f"git clone https://github.com/xunmengshe2x/index-tts-modal.git {repo_dir}",
-        shell=True,
-        check=True,
-        cwd="/checkpoints"
-     )
-
-    print("Repository downloaded successfully.")
-    return True
-
 # CRITICAL: Create a class to manage persistent model state
 @app.cls(
     gpu="A10G",
@@ -208,6 +134,7 @@ class IndexTTSModel:
     def __init__(self):
         self.tts = None
         self.model_initialized = False
+        self.logger = None
         
     @modal.enter()
     def setup_model(self):
@@ -240,6 +167,13 @@ class IndexTTSModel:
         self.model_initialized = True
         self.logger.info("IndexTTS model loaded successfully!")
         
+        # Log GPU availability
+        if torch.cuda.is_available():
+            self.logger.info(f"CUDA available: {torch.cuda.get_device_name()}")
+            self.logger.info(f"Current device: {torch.cuda.current_device()}")
+        else:
+            self.logger.warning("CUDA not available - running on CPU")
+        
     def _ensure_dependencies(self):
         """Ensure models and repository are available."""
         import subprocess
@@ -264,24 +198,28 @@ class IndexTTSModel:
 
             def download_model(url, filename):
                 subprocess.run(f"wget {url} -P /checkpoints", shell=True, check=True)
-                self.logger.info(f"Downloaded {filename}")
+                if self.logger:
+                    self.logger.info(f"Downloaded {filename}")
 
             with concurrent.futures.ThreadPoolExecutor() as executor:
                 futures = [executor.submit(download_model, url, filename) for url, filename in model_urls]
                 concurrent.futures.wait(futures)
-            self.logger.info("Models downloaded successfully.")
+            if self.logger:
+                self.logger.info("Models downloaded successfully.")
 
         # Download repository if not already present
         repo_dir = "/checkpoints/index-tts"
         if not os.path.exists(repo_dir):
-            self.logger.info("Cloning repository...")
+            if self.logger:
+                self.logger.info("Cloning repository...")
             subprocess.run(
                 f"git clone https://github.com/xunmengshe2x/index-tts-modal.git {repo_dir}",
                 shell=True,
                 check=True,
                 cwd="/checkpoints"
             )
-            self.logger.info("Repository downloaded successfully.")
+            if self.logger:
+                self.logger.info("Repository downloaded successfully.")
 
     @modal.method()
     def generate_audio_chunk(self, voice_base64: str, text: str, chunk_index: int, 
@@ -329,11 +267,88 @@ class IndexTTSModel:
                 if os.path.exists(temp_file):
                     os.remove(temp_file)
 
+    @modal.method()
+    async def process_streaming_request(self, text: str, voice_base64: str, chunk_size: int = 60,
+                                      max_text_tokens_per_sentence: int = 300,
+                                      sentences_bucket_max_size: int = 8):
+        """Process the entire streaming request using the persistent model."""
+        import json
+        
+        if not self.model_initialized:
+            raise RuntimeError("Model not initialized")
+        
+        # Split text into chunks
+        chunks = split_into_chunks(text, max_chunk_size=chunk_size)
+        self.logger.info(f"Split text into {len(chunks)} chunks")
+        
+        results = []
+        
+        # Send initial metadata
+        metadata = {
+            "type": "metadata",
+            "total_chunks": len(chunks),
+            "chunk_size": chunk_size
+        }
+        results.append(json.dumps(metadata))
+        
+        for idx, chunk in enumerate(chunks):
+            if not chunk or chunk.isspace():
+                self.logger.warning(f"Skipping empty chunk {idx}")
+                continue
+                
+            try:
+                # Clean the chunk text
+                chunk = chunk.strip()
+                if not chunk:
+                    self.logger.warning(f"Skipping empty chunk after cleaning {idx}")
+                    continue
+                    
+                self.logger.info(f"Processing chunk {idx}/{len(chunks)}: {chunk[:50]}...")
+                
+                # Generate audio using the persistent model (this runs on GPU now!)
+                audio_data = self.generate_audio_chunk(
+                    voice_base64=voice_base64,
+                    text=chunk,
+                    chunk_index=idx,
+                    max_text_tokens_per_sentence=max_text_tokens_per_sentence,
+                    sentences_bucket_max_size=sentences_bucket_max_size
+                )
+                
+                # Create chunk response
+                chunk_response = {
+                    "type": "chunk",
+                    "chunk_index": idx,
+                    "total_chunks": len(chunks),
+                    "text": chunk,
+                    "audio_base64": base64.b64encode(audio_data).decode("utf-8"),
+                    "is_final": idx == len(chunks) - 1
+                }
+                
+                self.logger.info(f"Processed chunk {idx} ({len(audio_data)} bytes)")
+                results.append(json.dumps(chunk_response))
+                
+            except Exception as e:
+                error_msg = f"Error processing chunk {idx}: {str(e)}"
+                self.logger.error(error_msg)
+                results.append(json.dumps({
+                    "type": "error",
+                    "chunk_index": idx,
+                    "error": error_msg
+                }))
+
+        # Send completion signal
+        completion = {
+            "type": "complete",
+            "total_chunks_processed": len([c for c in chunks if c.strip()])
+        }
+        results.append(json.dumps(completion))
+        
+        return results
+
 # Create a persistent model instance
 model_instance = IndexTTSModel()
 
 @app.function(
-    gpu="A10G",
     timeout=900,
     volumes={"/checkpoints": volume}
 )
@@ -358,76 +373,24 @@ async def inference_api_optimized(request: Request):
     if not text or not voice_base64:
         return {"error": "Missing required parameters: text and voice_base64"}
 
-    # Split text into chunks
-    chunks = split_into_chunks(text, max_chunk_size=chunk_size)
-    logger.info(f"Split text into {len(chunks)} chunks")
-
     async def generate_chunks():
         """Generator that yields audio chunks as they're produced."""
         try:
-            # Send initial metadata
-            metadata = {
-                "type": "metadata",
-                "total_chunks": len(chunks),
-                "chunk_size": chunk_size
-            }
-            yield json.dumps(metadata) + "\n"
+            # Process the entire request using the persistent model
+            results = await model_instance.process_streaming_request.aio(
+                text=text,
+                voice_base64=voice_base64,
+                chunk_size=chunk_size,
+                max_text_tokens_per_sentence=max_text_tokens_per_sentence,
+                sentences_bucket_max_size=sentences_bucket_max_size
+            )
             
-            for idx, chunk in enumerate(chunks):
-                if not chunk or chunk.isspace():
-                    logger.warning(f"Skipping empty chunk {idx}")
-                    continue
-                    
-                try:
-                    # Clean the chunk text
-                    chunk = chunk.strip()
-                    if not chunk:
-                        logger.warning(f"Skipping empty chunk after cleaning {idx}")
-                        continue
-                        
-                    logger.info(f"Processing chunk {idx}/{len(chunks)}: {chunk[:50]}...")
-                    
-                    # Generate audio using the persistent model - this should be MUCH faster now
-                    audio_data = model_instance.generate_audio_chunk.remote(
-                        voice_base64=voice_base64,
-                        text=chunk,
-                        chunk_index=idx,
-                        max_text_tokens_per_sentence=max_text_tokens_per_sentence,
-                        sentences_bucket_max_size=sentences_bucket_max_size
-                    )
-                    
-                    # Stream the chunk
-                    chunk_response = {
-                        "type": "chunk",
-                        "chunk_index": idx,
-                        "total_chunks": len(chunks),
-                        "text": chunk,
-                        "audio_base64": base64.b64encode(audio_data).decode("utf-8"),
-                        "is_final": idx == len(chunks) - 1
-                    }
-                    
-                    logger.info(f"Streaming chunk {idx} ({len(audio_data)} bytes)")
-                    yield json.dumps(chunk_response) + "\n"
-                    
-                    # Small delay to ensure proper streaming
-                    await asyncio.sleep(0.1)
-                    
-                except Exception as e:
-                    error_msg = f"Error processing chunk {idx}: {str(e)}"
-                    logger.error(error_msg)
-                    yield json.dumps({
-                        "type": "error",
-                        "chunk_index": idx,
-                        "error": error_msg
-                    }) + "\n"
-
-            # Send completion signal
-            completion = {
-                "type": "complete",
-                "total_chunks_processed": len([c for c in chunks if c.strip()])
-            }
-            yield json.dumps(completion) + "\n"
-            
+            # Stream the results
+            for result in results:
+                yield result + "\n"
+                # Small delay to ensure proper streaming
+                await asyncio.sleep(0.1)
+                
         except Exception as e:
             logger.error(f"Stream generation error: {str(e)}")
             yield json.dumps({
@@ -454,7 +417,6 @@ async def inference_api_optimized(request: Request):
 @modal.fastapi_endpoint(method="POST")
 async def inference_api_with_file(request: Request):
     """Original endpoint - kept for backward compatibility."""
-    # [Keep your original implementation here if needed]
     return {"message": "Please use the optimized endpoint: /inference_api_optimized"}
 
 # Define a health check endpoint
@@ -463,3 +425,9 @@ async def inference_api_with_file(request: Request):
 async def health():
     """Health check endpoint."""
     return {"status": "ok", "service": "index-tts-inference"}
+
+# Utility function to initialize the model (call this once to warm up)
+@app.function()
+def warmup_model():
+    """Warmup function to initialize the persistent model."""
+    return model_instance.setup_model.remote()
