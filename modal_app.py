@@ -2,6 +2,7 @@ import concurrent.futures
 import os
 import modal
 from fastapi import Request
+from fastapi.responses import StreamingResponse
 # Additional imports needed for chunking
 import base64
 import io
@@ -16,13 +17,12 @@ import torchaudio
 import logging
 import subprocess
 import asyncio
+import json
+import shutil
+import importlib.util
 
 # Define a custom image with all dependencies
 image = modal.Image.debian_slim().pip_install(
-   # "ninja-build",  # Add before deepspeed
-    #"deepspeed",    # Install after ninja-build
-   # "deepspeed",  # Add DeepSpeed
-    #"accelerate==0.25.0",
     "accelerate==0.25.0",
     "transformers==4.36.2",
     "tokenizers==0.15.0",
@@ -46,9 +46,9 @@ image = modal.Image.debian_slim().pip_install(
     "torch",
     "torchaudio",
     "WeTextProcessing",
-    "fastapi[standard]",  # Required for web endpoints
-    "pydantic>=2.0.0",    # Explicitly add Pydantic
-    "typing-extensions"   # Often needed with Pydantic
+    "fastapi[standard]",
+    "pydantic>=2.0.0",
+    "typing-extensions"
 )
 
 # Add CUDA support, ffmpeg, wget, and git
@@ -62,7 +62,6 @@ app = modal.App("index-tts-inference", image=image)
 
 def split_into_chunks(text: str, max_chunk_size: int = 20) -> List[str]:
     """Split text into chunks based on sentences and maximum chunk size."""
-    # Clean input text
     text = text.strip()
     if not text:
         return []
@@ -131,15 +130,12 @@ def concatenate_audio_files(audio_files: List[bytes]) -> bytes:
 )
 def download_models():
     """Download Index-TTS model files to the volume."""
-    # Create checkpoints directory if it doesn't exist
     os.makedirs("/checkpoints", exist_ok=True)
 
-    # Check if models are already downloaded
     if os.path.exists("/checkpoints/gpt.pth"):
         print("Models already downloaded.")
         return
 
-    # List of model URLs and their corresponding filenames
     model_urls = [
         ("https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/bigvgan_discriminator.pth", "bigvgan_discriminator.pth"),
         ("https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/bigvgan_generator.pth", "bigvgan_generator.pth"),
@@ -150,12 +146,10 @@ def download_models():
         ("https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/config.yaml", "config.yaml")
     ]
 
-    # Function to download a single model file
     def download_model(url, filename):
         subprocess.run(f"wget {url} -P /checkpoints", shell=True, check=True)
         print(f"Downloaded {filename}")
 
-    # Use ThreadPoolExecutor to download models in parallel
     with concurrent.futures.ThreadPoolExecutor() as executor:
         futures = [executor.submit(download_model, url, filename) for url, filename in model_urls]
         concurrent.futures.wait(futures)
@@ -170,30 +164,21 @@ def download_models():
 )
 def download_repository():
     """Download the Index-TTS repository to the volume."""
-    import subprocess
-    import os
-    import shutil # This import is also needed inside the function for Modal's environment
-
-    # Define the target directory for the repository
     repo_dir = "/checkpoints/index-tts"
-    
-    # Ensure the /checkpoints directory exists
     os.makedirs("/checkpoints", exist_ok=True)
 
-    # If the repository directory already exists, remove it to ensure a fresh clone
     if os.path.exists(repo_dir):
         print(f"Removing existing repository at {repo_dir}...")
         shutil.rmtree(repo_dir)
         print("Existing repository removed.")
 
     print(f"Cloning repository into {repo_dir}...")
-    # Clone your repository into the specified directory name 'index-tts'
     subprocess.run(
         f"git clone https://github.com/xunmengshe2x/index-tts-modal.git {repo_dir}",
         shell=True,
         check=True,
-        cwd="/checkpoints" # This ensures the clone command is run from /checkpoints
-     )
+        cwd="/checkpoints"
+    )
 
     print("Repository downloaded successfully.")
     return True
@@ -216,47 +201,35 @@ def run_inference(
     import logging
     import sys
 
-    # Set up logging
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
 
-    # Create inputs directory if it doesn't exist
     inputs_dir = "/checkpoints/inputs"
     os.makedirs(inputs_dir, exist_ok=True)
 
-    # Handle voice prompt (either from URL or local path)
     local_voice_path = os.path.join(inputs_dir, "voice_prompt.wav")
     if is_url:
         urllib.request.urlretrieve(voice_path, local_voice_path)
     else:
         local_voice_path = voice_path
 
-    # Debug: Check if the voice prompt file exists
     if not os.path.exists(local_voice_path):
         logger.error(f"Voice prompt file does not exist: {local_voice_path}")
         raise FileNotFoundError(f"Voice prompt file does not exist: {local_voice_path}")
 
-    # Set up output path
     outputs_dir = "/checkpoints/outputs"
     os.makedirs(outputs_dir, exist_ok=True)
     output_path = os.path.join(outputs_dir, output_filename)
 
-    # Add the cloned repository to the Python path
     sys.path.append("/checkpoints/index-tts")
-
-    # Initialize IndexTTS
     from indextts.infer import IndexTTS
     tts = IndexTTS(cfg_path="/checkpoints/config.yaml", model_dir="/checkpoints")
-
-    # Run inference
     tts.infer(audio_prompt=local_voice_path, text=text, output_path=output_path)
 
-    # Debug: Check if the output file exists
     if not os.path.exists(output_path):
         logger.error(f"Output file does not exist: {output_path}")
         raise FileNotFoundError(f"Output file does not exist: {output_path}")
 
-    # Read the output file
     with open(output_path, "rb") as f:
         output_data = f.read()
 
@@ -270,9 +243,6 @@ def run_inference(
 @modal.fastapi_endpoint(method="POST")
 async def inference_api(request: Request):
     """Web endpoint for Index-TTS inference using a voice URL."""
-    import base64
-
-    # Parse the request body
     data = await request.json()
     text = data.get("text")
     voice_url = data.get("voice_url")
@@ -280,14 +250,9 @@ async def inference_api(request: Request):
     if not text or not voice_url:
         return {"error": "Missing required parameters: text and voice_url"}
 
-    # Ensure models and repository are downloaded
     download_models.remote()
     download_repository.remote()
-
-    # Run inference
     output_data = run_inference.remote(text, voice_url, is_url=True)
-
-    # Encode the output as base64
     encoded_output = base64.b64encode(output_data).decode("utf-8")
 
     return {"audio_base64": encoded_output}
@@ -295,20 +260,19 @@ async def inference_api(request: Request):
 @app.function(
     gpu="A10G",
     timeout=900,
-    volumes={"/checkpoints": volume}
+    volumes={"/checkpoints": volume},
+    keep_warm=1  # Keep one instance warm for faster response
 )
 @modal.fastapi_endpoint(method="POST")
 async def inference_api_with_file(request: Request):
-    """Web endpoint for Index-TTS inference with direct file upload - STREAMING VERSION."""
-    from fastapi.responses import StreamingResponse
-    import base64
-    import os
-    import urllib.request
-    import logging
+    """Web endpoint for Index-TTS inference with direct file upload - TRUE STREAMING VERSION."""
     import sys
+    import os
+    import logging
     import importlib.util
     import json
-    import shutil
+    import base64
+    import asyncio
     import subprocess
     import concurrent.futures
 
@@ -320,136 +284,135 @@ async def inference_api_with_file(request: Request):
     data = await request.json()
     text = data.get("text")
     voice_base64 = data.get("voice_base64")
-    chunk_size = data.get("chunk_size", 60)  # Default changed to 20
+    chunk_size = data.get("chunk_size", 60)
     max_text_tokens_per_sentence = data.get("max_text_tokens_per_sentence", 300)
     sentences_bucket_max_size = data.get("sentences_bucket_max_size", 8)
 
     if not text or not voice_base64:
         return {"error": "Missing required parameters: text and voice_base64"}
 
-    # ENSURE MODELS AND REPOSITORY ARE DOWNLOADED (inline within this function)
-    # Create checkpoints directory if it doesn't exist
-    os.makedirs("/checkpoints", exist_ok=True)
-
-    # Download models if not already present
-    if not os.path.exists("/checkpoints/gpt.pth"):
-        logger.info("Downloading models...")
-        model_urls = [
-            ("https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/bigvgan_discriminator.pth", "bigvgan_discriminator.pth"),
-            ("https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/bigvgan_generator.pth", "bigvgan_generator.pth"),
-            ("https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/bpe.model", "bpe.model"),
-            ("https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/dvae.pth", "dvae.pth"),
-            ("https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/gpt.pth", "gpt.pth"),
-            ("https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/unigram_12000.vocab", "unigram_12000.vocab"),
-            ("https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/config.yaml", "config.yaml")
-        ]
-
-        def download_model(url, filename):
-            subprocess.run(f"wget {url} -P /checkpoints", shell=True, check=True)
-            logger.info(f"Downloaded {filename}")
-
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            futures = [executor.submit(download_model, url, filename) for url, filename in model_urls]
-            concurrent.futures.wait(futures)
-        logger.info("Models downloaded successfully.")
-
-    # Download repository if not already present
-    repo_dir = "/checkpoints/index-tts"
-    if not os.path.exists(repo_dir):
-        logger.info("Cloning repository...")
-        subprocess.run(
-            f"git clone https://github.com/xunmengshe2x/index-tts-modal.git {repo_dir}",
-            shell=True,
-            check=True,
-            cwd="/checkpoints"
-        )
-        logger.info("Repository downloaded successfully.")
-
-    # Create inputs directory if it doesn't exist
-    inputs_dir = "/checkpoints/inputs"
-    os.makedirs(inputs_dir, exist_ok=True)
-    voice_path = os.path.join(inputs_dir, "voice_prompt.wav")
-
-    # Write the voice file ONCE before processing chunks
-    with open(voice_path, "wb") as temp_file:
-        temp_file.write(base64.b64decode(voice_base64))
-
-    # Verify voice file was created successfully
-    if not os.path.exists(voice_path):
-        logger.error(f"Failed to create voice prompt file: {voice_path}")
-        return {"error": "Failed to create voice prompt file"}
-
-    # Debug: Check if the voice prompt file exists and log its size
-    file_size = os.path.getsize(voice_path)
-    logger.info(f"Voice prompt file created successfully: {voice_path} (size: {file_size} bytes)")
-
-    # Set up output paths
-    outputs_dir = "/checkpoints/outputs"
-    os.makedirs(outputs_dir, exist_ok=True)
-
-    # Add the cloned repository to the Python path
-    sys.path.append("/checkpoints/index-tts")
-
-    # Change the current working directory to /checkpoints
-    os.chdir("/checkpoints")
-
-    # Print the contents of the current directory
-    current_dir = os.getcwd()
-    print(f"Contents of current directory {current_dir}: {os.listdir(current_dir)}")
-
-    # Dynamically import the module
-    module_path = "/checkpoints/index-tts/indextts/infer.py"
-    spec = importlib.util.spec_from_file_location("indextts.infer", module_path)
-    indextts_infer = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(indextts_infer)
-
-    # Initialize IndexTTS
-    tts = indextts_infer.IndexTTS(cfg_path="/checkpoints/config.yaml", model_dir="/checkpoints")
-
-    # Split text into chunks
-    chunks = split_into_chunks(text, max_chunk_size=chunk_size)
-    logger.info(f"Split text into {len(chunks)} chunks")
-
     async def generate_chunks():
-        """Generator that yields audio chunks as they're produced."""
+        """Generator that yields audio chunks as they're produced - TRUE STREAMING."""
+        tts = None
+        voice_path = None
+        
         try:
-            # Send initial metadata
+            # Step 1: Setup (done once, before streaming starts)
+            logger.info("Setting up models and environment...")
+            
+            # Ensure models and repository are available
+            os.makedirs("/checkpoints", exist_ok=True)
+
+            # Download models if not already present (this blocks initially but only once)
+            if not os.path.exists("/checkpoints/gpt.pth"):
+                logger.info("Downloading models...")
+                model_urls = [
+                    ("https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/bigvgan_discriminator.pth", "bigvgan_discriminator.pth"),
+                    ("https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/bigvgan_generator.pth", "bigvgan_generator.pth"),
+                    ("https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/bpe.model", "bpe.model"),
+                    ("https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/dvae.pth", "dvae.pth"),
+                    ("https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/gpt.pth", "gpt.pth"),
+                    ("https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/unigram_12000.vocab", "unigram_12000.vocab"),
+                    ("https://huggingface.co/IndexTeam/IndexTTS-1.5/resolve/main/config.yaml", "config.yaml")
+                ]
+
+                def download_model(url, filename):
+                    subprocess.run(f"wget {url} -P /checkpoints", shell=True, check=True)
+                    logger.info(f"Downloaded {filename}")
+
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    futures = [executor.submit(download_model, url, filename) for url, filename in model_urls]
+                    concurrent.futures.wait(futures)
+                logger.info("Models downloaded successfully.")
+
+            # Download repository if not already present
+            repo_dir = "/checkpoints/index-tts"
+            if not os.path.exists(repo_dir):
+                logger.info("Cloning repository...")
+                subprocess.run(
+                    f"git clone https://github.com/xunmengshe2x/index-tts-modal.git {repo_dir}",
+                    shell=True,
+                    check=True,
+                    cwd="/checkpoints"
+                )
+                logger.info("Repository downloaded successfully.")
+
+            # Setup directories and voice file
+            inputs_dir = "/checkpoints/inputs"
+            outputs_dir = "/checkpoints/outputs"
+            os.makedirs(inputs_dir, exist_ok=True)
+            os.makedirs(outputs_dir, exist_ok=True)
+            
+            # Create unique voice file to avoid conflicts
+            import time
+            voice_filename = f"voice_prompt_{int(time.time())}.wav"
+            voice_path = os.path.join(inputs_dir, voice_filename)
+            
+            with open(voice_path, "wb") as temp_file:
+                temp_file.write(base64.b64decode(voice_base64))
+
+            if not os.path.exists(voice_path):
+                raise FileNotFoundError(f"Failed to create voice prompt file: {voice_path}")
+
+            file_size = os.path.getsize(voice_path)
+            logger.info(f"Voice file created: {voice_path} (size: {file_size} bytes)")
+
+            # Initialize TTS model
+            sys.path.append("/checkpoints/index-tts")
+            os.chdir("/checkpoints")
+
+            module_path = "/checkpoints/index-tts/indextts/infer.py"
+            spec = importlib.util.spec_from_file_location("indextts.infer", module_path)
+            indextts_infer = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(indextts_infer)
+
+            tts = indextts_infer.IndexTTS(cfg_path="/checkpoints/config.yaml", model_dir="/checkpoints")
+            logger.info("TTS model initialized successfully.")
+
+            # Split text into chunks
+            chunks = split_into_chunks(text, max_chunk_size=chunk_size)
+            logger.info(f"Text split into {len(chunks)} chunks")
+
+            # Step 2: Send metadata immediately to start the stream
             metadata = {
                 "type": "metadata",
                 "total_chunks": len(chunks),
-                "chunk_size": chunk_size
+                "chunk_size": chunk_size,
+                "status": "initialized"
             }
             yield json.dumps(metadata) + "\n"
             
+            # Force flush the first message
+            await asyncio.sleep(0.01)
+
+            # Step 3: Process chunks one by one and stream each immediately
             for idx, chunk in enumerate(chunks):
                 if not chunk or chunk.isspace():
                     logger.warning(f"Skipping empty chunk {idx}")
                     continue
                     
-                chunk_output = f"chunk_{idx}.wav"
-                chunk_output_path = os.path.join(outputs_dir, chunk_output)
+                chunk = chunk.strip()
+                if not chunk:
+                    continue
                 
                 try:
-                    # Clean the chunk text
-                    chunk = chunk.strip()
-                    if not chunk:
-                        logger.warning(f"Skipping empty chunk after cleaning {idx}")
-                        continue
+                    logger.info(f"Processing chunk {idx + 1}/{len(chunks)}: '{chunk[:50]}...'")
                     
-                    # Verify voice file still exists before processing each chunk
-                    if not os.path.exists(voice_path):
-                        error_msg = f"Voice prompt file missing before processing chunk {idx}: {voice_path}"
-                        logger.error(error_msg)
-                        yield json.dumps({
-                            "type": "error",
-                            "chunk_index": idx,
-                            "error": error_msg
-                        }) + "\n"
-                        break
-                        
-                    logger.info(f"Processing chunk {idx}/{len(chunks)}: {chunk[:50]}...")
+                    # Generate unique filename for this chunk
+                    chunk_filename = f"chunk_{idx}_{int(time.time())}.wav"
+                    chunk_output_path = os.path.join(outputs_dir, chunk_filename)
                     
-                    # Generate audio for this chunk
+                    # Send processing update
+                    processing_update = {
+                        "type": "processing",
+                        "chunk_index": idx,
+                        "total_chunks": len(chunks),
+                        "text": chunk,
+                        "status": "generating_audio"
+                    }
+                    yield json.dumps(processing_update) + "\n"
+                    
+                    # This is the expensive operation - generate audio for this chunk
                     tts.infer_fast(
                         audio_prompt=voice_path,
                         text=chunk,
@@ -468,29 +431,30 @@ async def inference_api_with_file(request: Request):
                         }) + "\n"
                         continue
                         
-                    # Read the audio data
+                    # Read and encode the audio data
                     with open(chunk_output_path, "rb") as f:
                         audio_data = f.read()
                     
-                    # Stream each chunk as it's generated
+                    # Stream this chunk immediately after generation
                     chunk_response = {
                         "type": "chunk",
                         "chunk_index": idx,
                         "total_chunks": len(chunks),
                         "text": chunk,
                         "audio_base64": base64.b64encode(audio_data).decode("utf-8"),
-                        "is_final": idx == len(chunks) - 1
+                        "is_final": idx == len(chunks) - 1,
+                        "audio_size_bytes": len(audio_data)
                     }
                     
-                    logger.info(f"Streaming chunk {idx} ({len(audio_data)} bytes)")
+                    logger.info(f"Streaming chunk {idx + 1}/{len(chunks)} ({len(audio_data)} bytes)")
                     yield json.dumps(chunk_response) + "\n"
                     
-                    # Clean up chunk file immediately after streaming
+                    # Clean up chunk file immediately
                     if os.path.exists(chunk_output_path):
                         os.remove(chunk_output_path)
                     
-                    # Small delay to ensure proper streaming
-                    await asyncio.sleep(0.1)
+                    # Small async sleep to ensure proper streaming and prevent blocking
+                    await asyncio.sleep(0.01)
                     
                 except Exception as e:
                     error_msg = f"Error processing chunk {idx}: {str(e)}"
@@ -502,13 +466,15 @@ async def inference_api_with_file(request: Request):
                     }) + "\n"
                     
                     # Clean up on error
+                    chunk_output_path = os.path.join(outputs_dir, f"chunk_{idx}_{int(time.time())}.wav")
                     if os.path.exists(chunk_output_path):
                         os.remove(chunk_output_path)
 
             # Send completion signal
             completion = {
                 "type": "complete",
-                "total_chunks_processed": len([c for c in chunks if c.strip()])
+                "total_chunks_processed": len([c for c in chunks if c.strip()]),
+                "status": "finished"
             }
             yield json.dumps(completion) + "\n"
             
@@ -519,10 +485,13 @@ async def inference_api_with_file(request: Request):
                 "error": f"Stream generation failed: {str(e)}"
             }) + "\n"
         finally:
-            # Clean up the voice file ONLY after all chunks are processed
-            if os.path.exists(voice_path):
-                logger.info(f"Cleaning up voice prompt file: {voice_path}")
-                os.remove(voice_path)
+            # Clean up voice file
+            if voice_path and os.path.exists(voice_path):
+                logger.info(f"Cleaning up voice file: {voice_path}")
+                try:
+                    os.remove(voice_path)
+                except Exception as e:
+                    logger.warning(f"Failed to clean up voice file: {e}")
 
     return StreamingResponse(
         generate_chunks(),
@@ -530,10 +499,10 @@ async def inference_api_with_file(request: Request):
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"  # Disable nginx buffering for true streaming
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+            "Transfer-Encoding": "chunked"  # Ensure chunked encoding
         }
     )
-
 
 # Define a health check endpoint
 @app.function()
