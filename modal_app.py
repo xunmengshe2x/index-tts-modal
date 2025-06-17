@@ -16,6 +16,7 @@ import torchaudio
 import logging
 import subprocess
 import asyncio
+import gc
 
 # Define a custom image with all dependencies
 image = modal.Image.debian_slim().pip_install(
@@ -55,6 +56,23 @@ volume = modal.Volume.from_name("index-tts-models", create_if_missing=True)
 
 # Create a Modal app
 app = modal.App("index-tts-inference", image=image)
+
+def clear_gpu_memory():
+    """Clear GPU memory and cache"""
+    if torch.cuda.is_available():
+        # Clear PyTorch cache
+        torch.cuda.empty_cache()
+        
+        # Force synchronization
+        torch.cuda.synchronize()
+        
+        # Collect garbage
+        gc.collect()
+        
+        # Clear IPC cache (helps with memory fragmentation)
+        torch.cuda.ipc_collect()
+        
+        print(f"GPU memory cleared. Current usage: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
 
 def split_into_chunks(text: str, max_chunk_size: int = 20) -> List[str]:
     """Split text into chunks based on sentences and maximum chunk size."""
@@ -215,6 +233,12 @@ class IndexTTSModel:
         import importlib.util
         import logging
         
+        # Set CUDA debugging environment
+        os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+        
+        # Clear GPU memory at startup
+        clear_gpu_memory()
+        
         # Set up logging
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
@@ -236,9 +260,19 @@ class IndexTTSModel:
         
         # Initialize IndexTTS model - this is the slow part we want to do once
         self.logger.info("Loading IndexTTS model (this may take a while)...")
-        self.tts = indextts_infer.IndexTTS(cfg_path="/checkpoints/config.yaml", model_dir="/checkpoints")
-        self.model_initialized = True
-        self.logger.info("IndexTTS model loaded successfully!")
+        
+        try:
+            self.tts = indextts_infer.IndexTTS(cfg_path="/checkpoints/config.yaml", model_dir="/checkpoints")
+            self.model_initialized = True
+            self.logger.info("IndexTTS model loaded successfully!")
+            
+            # Clear memory after model loading
+            clear_gpu_memory()
+            
+        except Exception as e:
+            self.logger.error(f"Error loading model: {str(e)}")
+            clear_gpu_memory()
+            raise
         
     def _ensure_dependencies(self):
         """Ensure models and repository are available."""
@@ -290,6 +324,11 @@ class IndexTTSModel:
         """Generate audio for a single text chunk using the persistent model."""
         if not self.model_initialized:
             raise RuntimeError("Model not initialized")
+        
+        # Clear GPU memory before processing each chunk
+        if chunk_index > 0:  # Don't clear before first chunk
+            torch.cuda.empty_cache()
+            gc.collect()
             
         # Create inputs directory
         inputs_dir = "/checkpoints/inputs"
@@ -308,14 +347,15 @@ class IndexTTSModel:
             os.makedirs(outputs_dir, exist_ok=True)
             chunk_output_path = os.path.join(outputs_dir, f"chunk_{chunk_index}.wav")
             
-            # Generate audio using the persistent model
-            self.tts.infer_fast(
-                audio_prompt=voice_path,
-                text=text,
-                output_path=chunk_output_path,
-                max_text_tokens_per_sentence=max_text_tokens_per_sentence,
-                sentences_bucket_max_size=sentences_bucket_max_size
-            )
+            # Generate audio using the persistent model with memory management
+            with torch.no_grad():  # Disable gradients to save memory
+                self.tts.infer_fast(
+                    audio_prompt=voice_path,
+                    text=text,
+                    output_path=chunk_output_path,
+                    max_text_tokens_per_sentence=max_text_tokens_per_sentence,
+                    sentences_bucket_max_size=sentences_bucket_max_size
+                )
             
             # Read the generated audio
             with open(chunk_output_path, "rb") as f:
@@ -323,11 +363,21 @@ class IndexTTSModel:
             
             return audio_data
             
+        except Exception as e:
+            # Clear memory on error
+            torch.cuda.empty_cache()
+            gc.collect()
+            raise e
+            
         finally:
             # Clean up temporary files
             for temp_file in [voice_path, chunk_output_path]:
                 if os.path.exists(temp_file):
                     os.remove(temp_file)
+            
+            # Clear memory after processing
+            torch.cuda.empty_cache()
+            gc.collect()
 
 # Create a persistent model instance
 model_instance = IndexTTSModel()
